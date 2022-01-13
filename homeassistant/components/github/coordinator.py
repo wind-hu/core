@@ -9,10 +9,6 @@ from aiogithubapi.models.repository import GitHubRepositoryModel
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, T
-from homeassistant.helpers.aiohttp_client import (
-    SERVER_SOFTWARE,
-    async_get_clientsession,
-)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DEFAULT_UPDATE_INTERVAL, DOMAIN, LOGGER
@@ -35,15 +31,12 @@ class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator[T]):
         self,
         hass: HomeAssistant,
         *,
+        client: GitHubAPI,
         entry: ConfigEntry,
     ) -> None:
         """Initialize base GitHub data updater."""
         self.repository: str = entry.data["repository"]
-        self._client = GitHubAPI(
-            token=entry.data["token"],
-            session=async_get_clientsession(hass),
-            **{"client_name": SERVER_SOFTWARE},
-        )
+        self._client = client
 
         super().__init__(
             hass,
