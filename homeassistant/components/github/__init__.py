@@ -35,10 +35,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     coordinators = DataUpdateCoordinators(
         information=RepositoryInformationDataUpdateCoordinator(
-            hass=hass, client=client, entry=entry
+            hass=hass, entry=entry, client=client
         ),
         release=RepositoryReleasesDataUpdateCoordinator(
-            hass=hass, client=client, entry=entry
+            hass=hass, entry=entry, client=client
         ),
     )
 

@@ -25,16 +25,14 @@ class DataUpdateCoordinators:
 class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator[T]):
     """Base class for GitHub data update coordinators."""
 
-    config_entry: ConfigEntry
-
     def __init__(
         self,
         hass: HomeAssistant,
-        *,
-        client: GitHubAPI,
         entry: ConfigEntry,
+        client: GitHubAPI,
     ) -> None:
         """Initialize base GitHub data updater."""
+        self.config_entry = entry
         self.repository: str = entry.data["repository"]
         self._client = client
 
