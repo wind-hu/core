@@ -8,7 +8,7 @@ from aiogithubapi.models.release import GitHubReleaseModel
 from aiogithubapi.models.repository import GitHubRepositoryModel
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, T
 from homeassistant.helpers.aiohttp_client import (
     SERVER_SOFTWARE,
     async_get_clientsession,
@@ -26,7 +26,7 @@ class DataUpdateCoordinators:
     release: RepositoryReleasesDataUpdateCoordinator
 
 
-class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator):
+class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator[T]):
     """Base class for GitHub data update coordinators."""
 
     config_entry: ConfigEntry
@@ -53,10 +53,10 @@ class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
 
-class RepositoryInformationDataUpdateCoordinator(GitHubBaseDataUpdateCoordinator):
+class RepositoryInformationDataUpdateCoordinator(
+    GitHubBaseDataUpdateCoordinator[GitHubRepositoryModel]
+):
     """Data update coordinator for repository information."""
-
-    data: GitHubRepositoryModel = None
 
     async def _async_update_data(self) -> GitHubRepositoryModel | None:
         """Get the latest data from GitHub."""
@@ -67,10 +67,10 @@ class RepositoryInformationDataUpdateCoordinator(GitHubBaseDataUpdateCoordinator
             raise UpdateFailed(exception) from exception
 
 
-class RepositoryReleasesDataUpdateCoordinator(GitHubBaseDataUpdateCoordinator):
+class RepositoryReleasesDataUpdateCoordinator(
+    GitHubBaseDataUpdateCoordinator[GitHubReleaseModel]
+):
     """Data update coordinator for repository releases."""
-
-    data: GitHubReleaseModel | None
 
     async def _async_update_data(self) -> GitHubReleaseModel | None:
         """Get the latest data from GitHub."""
