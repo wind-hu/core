@@ -189,7 +189,6 @@ class GitHubSensorLastIssueEntity(GitHubSensorBaseEntity):
         return {
             "url": issue.html_url,
             "number": issue.number,
-            "author": issue.user.login,
         }
 
 
@@ -221,5 +220,4 @@ class GitHubSensorLastPullEntity(GitHubSensorBaseEntity):
         return {
             "url": pull.html_url,
             "number": pull.number,
-            "author": pull.user.login,
         }

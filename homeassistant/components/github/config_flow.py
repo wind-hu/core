@@ -1,6 +1,7 @@
 """Config flow for GitHub integration."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from aiogithubapi import GitHubAPI, GitHubDeviceAPI, GitHubException
@@ -26,9 +27,28 @@ async def _stared_repositories(
 ) -> list[str]:
     """Return a list of repositories that the user has starred."""
     client = GitHubAPI(token=access_token, session=async_get_clientsession(hass))
+
+    async def _get_starred():
+        response = await client.user.starred(**{"params": {"per_page": 100}})
+        if not response.is_last_page:
+            results = await asyncio.gather(
+                *(
+                    client.user.starred(
+                        **{"params": {"per_page": 100, "page": page_number}},
+                    )
+                    for page_number in range(
+                        response.next_page_number, response.last_page_number + 1
+                    )
+                )
+            )
+            for result in results:
+                response.data.extend(result.data)
+
+        return response.data
+
     try:
-        result = await client.user.starred()
-        return [repo.full_name for repo in result.data]
+        result = await _get_starred()
+        return sorted((repo.full_name for repo in result), key=str.casefold)
     except GitHubException:
         pass
 
