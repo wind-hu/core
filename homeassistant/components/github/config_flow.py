@@ -1,70 +1,38 @@
 """Config flow for GitHub integration."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
+from aiogithubapi import GitHubAPI, GitHubDeviceAPI, GitHubException
+from aiogithubapi.const import OAUTH_USER_LOGIN
 import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.exceptions import HomeAssistantError
-
-from .const import DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
-
-# TODO adjust the data schema to the data that you need
-STEP_USER_DATA_SCHEMA = vol.Schema(
-    {
-        vol.Required("host"): str,
-        vol.Required("username"): str,
-        vol.Required("password"): str,
-    }
+from homeassistant.helpers.aiohttp_client import (
+    SERVER_SOFTWARE,
+    async_get_clientsession,
 )
+import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.event import async_call_later
+
+from .const import CLIENT_ID, DOMAIN, LOGGER
 
 
-class PlaceholderHub:
-    """Placeholder class to make tests pass.
+async def _stared_repositories(
+    hass: HomeAssistant,
+    access_token: str,
+) -> list[str]:
+    """Return a list of repositories that the user has starred."""
+    client = GitHubAPI(token=access_token, session=async_get_clientsession(hass))
+    try:
+        result = await client.user.starred()
+        return [repo.full_name for repo in result.data]
+    except GitHubException:
+        pass
 
-    TODO Remove this placeholder class and replace with things from your PyPI package.
-    """
-
-    def __init__(self, host: str) -> None:
-        """Initialize."""
-        self.host = host
-
-    async def authenticate(self, username: str, password: str) -> bool:
-        """Test if we can authenticate with the host."""
-        return True
-
-
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
-    """Validate the user input allows us to connect.
-
-    Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
-    """
-    # TODO validate the data can be used to set up a connection.
-
-    # If your PyPI package is not built with async, pass your methods
-    # to the executor:
-    # await hass.async_add_executor_job(
-    #     your_validate_func, data["username"], data["password"]
-    # )
-
-    hub = PlaceholderHub(data["host"])
-
-    if not await hub.authenticate(data["username"], data["password"]):
-        raise InvalidAuth
-
-    # If you cannot connect:
-    # throw CannotConnect
-    # If the authentication is wrong:
-    # InvalidAuth
-
-    # Return info that you want to store in the config entry.
-    return {"title": "Name of the device"}
+    return ["home-assistant/core"]
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -72,38 +40,88 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self):
+        """Initialize."""
+        self._errors = {}
+        self.device = None
+        self.activation = None
+        self._progress_task = None
+        self._login_device = None
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the initial step."""
-        _LOGGER.error(self.hass.data.get(DOMAIN, {}).get("config"))
-        if user_input is None:
-            return self.async_show_form(
-                step_id="user", data_schema=STEP_USER_DATA_SCHEMA
+        self._errors = {}
+        if self._async_current_entries():
+            return self.async_abort(reason="single_instance_allowed")
+
+        return await self.async_step_device(user_input)
+
+    async def async_step_device(self, _user_input):
+        """Handle device steps."""
+
+        async def _wait_for_activation(_=None):
+            if self._login_device is None or self._login_device.expires_in is None:
+                async_call_later(self.hass, 0, _wait_for_activation)
+                return
+
+            response = await self.device.activation(
+                device_code=self._login_device.device_code
+            )
+            self.activation = response.data
+            self.hass.async_create_task(
+                self.hass.config_entries.flow.async_configure(flow_id=self.flow_id)
             )
 
-        errors = {}
+        if not self.activation:
+            if not self.device:
+                self.device = GitHubDeviceAPI(
+                    client_id=CLIENT_ID,
+                    session=async_get_clientsession(self.hass),
+                    **{"client_name": SERVER_SOFTWARE},
+                )
+            async_call_later(self.hass, 0, _wait_for_activation)
+            try:
+                response = await self.device.register()
+                self._login_device = response.data
+            except GitHubException as exception:
+                LOGGER.exception(exception)
+                return self.async_abort(reason="github")
 
-        try:
-            info = await validate_input(self.hass, user_input)
-        except CannotConnect:
-            errors["base"] = "cannot_connect"
-        except InvalidAuth:
-            errors["base"] = "invalid_auth"
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.exception("Unexpected exception")
-            errors["base"] = "unknown"
-        else:
-            return self.async_create_entry(title=info["title"], data=user_input)
+            return self.async_show_progress(
+                step_id="device",
+                progress_action="wait_for_device",
+                description_placeholders={
+                    "url": OAUTH_USER_LOGIN,
+                    "code": self._login_device.user_code,
+                },
+            )
 
-        return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+        return self.async_show_progress_done(next_step_id="repositories")
+
+    async def async_step_repositories(self, user_input):
+        """Handle repositories step."""
+
+        if not user_input:
+            repositories = await _stared_repositories(
+                self.hass, self.activation.access_token
+            )
+            LOGGER.warning(repositories)
+            return self.async_show_form(
+                step_id="repositories",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("repositories"): cv.multi_select(repositories),
+                    }
+                ),
+                errors=self._errors,
+            )
+
+        return self.async_create_entry(
+            title="",
+            data={
+                "access_token": self.activation.access_token,
+                "repositories": user_input["repositories"],
+            },
         )
-
-
-class CannotConnect(HomeAssistantError):
-    """Error to indicate we cannot connect."""
-
-
-class InvalidAuth(HomeAssistantError):
-    """Error to indicate there is invalid auth."""

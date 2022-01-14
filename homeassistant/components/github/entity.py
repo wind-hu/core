@@ -21,8 +21,9 @@ class GitHubEntity(CoordinatorEntity):
     def device_info(self) -> DeviceInfo:
         """Return device information about this GitHub device."""
         return DeviceInfo(
-            identifiers={(DOMAIN, self.coordinator.data.id)},
+            identifiers={(DOMAIN, self.coordinator.repository)},
             name=self.coordinator.repository,
-            configuration_url=self.coordinator.data.html_url,
+            manufacturer="GitHub",
+            configuration_url=f"https://github.com/{self.coordinator.repository}",
             entry_type=DeviceEntryType.SERVICE,
         )

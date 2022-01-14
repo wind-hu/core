@@ -9,13 +9,12 @@
             "unknown": "Unexpected error"
         },
         "step": {
-            "user": {
-                "data": {
-                    "host": "Host",
-                    "password": "Password",
-                    "username": "Username"
-                }
+            "device": {
+                "title": "Waiting for device activation"
             }
+        },
+        "progress": {
+            "wait_for_device": "1. Open {url} \n2.Paste the following key to authorize the integration: \n```\n{code}\n```\n"
         }
     }
 }
