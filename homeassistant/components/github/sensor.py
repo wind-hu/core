@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from aiogithubapi.models.release import GitHubReleaseModel
-from aiogithubapi.models.repository import GitHubRepositoryModel
-
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
@@ -30,10 +31,7 @@ from .entity import GitHubEntity
 class GitHubSensorEntityDescriptionMixin:
     """Mixin for required GitHub description keys."""
 
-    state_fn: Callable[
-        [GitHubRepositoryModel | GitHubReleaseModel],
-        StateType | datetime,
-    ]
+    state_fn: Callable[[Any], StateType | datetime]
 
 
 @dataclass
@@ -51,6 +49,7 @@ INFORMATION_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
         native_unit_of_measurement="Stars",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
         state_fn=lambda data: data.stargazers_count,
     ),
     GitHubSensorEntityDescription(
@@ -60,6 +59,7 @@ INFORMATION_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
         native_unit_of_measurement="Watchers",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
         state_fn=lambda data: data.watchers_count,
     ),
     GitHubSensorEntityDescription(
@@ -69,6 +69,7 @@ INFORMATION_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
         native_unit_of_measurement="Forks",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
         state_fn=lambda data: data.forks_count,
     ),
     GitHubSensorEntityDescription(
@@ -76,7 +77,32 @@ INFORMATION_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
         name="Default branch",
         entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
         state_fn=lambda data: data.default_branch,
+    ),
+)
+
+ISSUES_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
+    GitHubSensorEntityDescription(
+        key="issues_count",
+        name="Issues",
+        native_unit_of_measurement="Issues",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        state_fn=lambda data: len(data.issues),
+    ),
+)
+
+PULLS_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
+    GitHubSensorEntityDescription(
+        key="pulls_count",
+        name="Pull Requests",
+        native_unit_of_measurement="Pull Requests",
+        entity_registry_enabled_default=False,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        state_fn=lambda data: len(data.pulls),
     ),
 )
 
@@ -88,7 +114,6 @@ async def async_setup_entry(
 ) -> None:
     """Set up GitHub sensor based on a config entry."""
     repositories: dict[str, DataUpdateCoordinators] = hass.data[DOMAIN]
-
     entities: list[GitHubSensorBaseEntity] = []
 
     for coordinators in repositories.values():
@@ -100,8 +125,18 @@ async def async_setup_entry(
         if coordinators.release.data is not None:
             entities.append(GitHubSensorLastReleaseEntity(coordinators.release))
 
-        entities.append(GitHubSensorLastIssueEntity(coordinators.issue))
         entities.append(GitHubSensorLastPullEntity(coordinators.issue))
+        for description in PULLS_DESCRIPTIONS:
+            entities.append(
+                GitHubSensorInformationEntity(coordinators.issue, description)
+            )
+
+        if coordinators.information.data.has_issues:
+            entities.append(GitHubSensorLastIssueEntity(coordinators.issue))
+            for description in ISSUES_DESCRIPTIONS:
+                entities.append(
+                    GitHubSensorInformationEntity(coordinators.issue, description)
+                )
 
     async_add_entities(entities)
 
@@ -138,6 +173,8 @@ class GitHubSensorInformationEntity(GitHubSensorBaseEntity):
 
 class GitHubSensorLastReleaseEntity(GitHubSensorBaseEntity):
     """Defines a GitHub release sensor entity."""
+
+    _attr_entity_registry_enabled_default = True
 
     coordinator: RepositoryReleaseDataUpdateCoordinator
 

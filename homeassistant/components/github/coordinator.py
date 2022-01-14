@@ -87,7 +87,7 @@ class RepositoryIssueDataUpdateCoordinator(
             if not response.is_last_page:
                 results = await asyncio.gather(
                     *(
-                        self._client.repos.pulls.list(
+                        self._client.repos.issues.list(
                             self.repository,
                             **{"params": {"per_page": 100, "page": page_number}},
                         )
