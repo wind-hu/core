@@ -14,14 +14,6 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import DEFAULT_UPDATE_INTERVAL, DOMAIN, LOGGER
 
 
-@dataclass
-class DataUpdateCoordinators:
-    """Custom data update coordinators for the GitHub integration."""
-
-    information: RepositoryInformationDataUpdateCoordinator
-    release: RepositoryReleasesDataUpdateCoordinator
-
-
 class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator[T]):
     """Base class for GitHub data update coordinators."""
 
@@ -30,10 +22,11 @@ class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator[T]):
         hass: HomeAssistant,
         entry: ConfigEntry,
         client: GitHubAPI,
+        repository: str,
     ) -> None:
         """Initialize base GitHub data updater."""
         self.config_entry = entry
-        self.repository: str = entry.data["repository"]
+        self.repository = repository
         self._client = client
 
         super().__init__(
@@ -70,3 +63,16 @@ class RepositoryReleasesDataUpdateCoordinator(
             return next(result.data, None)
         except GitHubException as exception:
             raise UpdateFailed(exception) from exception
+
+
+@dataclass
+class DataUpdateCoordinators:
+    """Custom data update coordinators for the GitHub integration."""
+
+    information: RepositoryInformationDataUpdateCoordinator
+    release: RepositoryReleasesDataUpdateCoordinator
+
+    @property
+    def list(self) -> list[GitHubBaseDataUpdateCoordinator]:
+        """Return a list of all coordinators."""
+        return [self.information, self.release]

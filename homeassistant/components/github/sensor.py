@@ -109,15 +109,17 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up GitHub sensor based on a config entry."""
-    coordinators: DataUpdateCoordinators = hass.data[DOMAIN][entry.entry_id]
+    repositories: dict[str, DataUpdateCoordinators] = hass.data[DOMAIN][entry.entry_id]
 
     entities: list[GitHubSensorEntity] = []
-    for description in INFORMATION_DESCRIPTIONS:
-        entities.append(GitHubSensorEntity(coordinators.information, description))
 
-    if coordinators.release.data is not None:
-        for description in RELEASE_DESCRIPTIONS:
-            entities.append(GitHubSensorEntity(coordinators.release, description))
+    for coordinators in repositories.values():
+        for description in INFORMATION_DESCRIPTIONS:
+            entities.append(GitHubSensorEntity(coordinators.information, description))
+
+        if coordinators.release.data is not None:
+            for description in RELEASE_DESCRIPTIONS:
+                entities.append(GitHubSensorEntity(coordinators.release, description))
 
     async_add_entities(entities)
 

@@ -25,7 +25,7 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up GitHub from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
+    hass.data.setdefault(DOMAIN, {entry.entry_id: {}})
 
     client = GitHubAPI(
         token=entry.data["token"],
@@ -33,21 +33,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         **{"client_name": SERVER_SOFTWARE},
     )
 
-    coordinators = DataUpdateCoordinators(
-        information=RepositoryInformationDataUpdateCoordinator(
-            hass=hass, entry=entry, client=client
-        ),
-        release=RepositoryReleasesDataUpdateCoordinator(
-            hass=hass, entry=entry, client=client
-        ),
-    )
+    repositories: list[str] = entry.data["repositories"]
 
-    await asyncio.gather(
-        *[
-            coordinators.information.async_config_entry_first_refresh(),
-            coordinators.release.async_config_entry_first_refresh(),
-        ]
-    )
+    for repository in repositories:
+        coordinators = DataUpdateCoordinators(
+            information=RepositoryInformationDataUpdateCoordinator(
+                hass=hass, entry=entry, client=client, repository=repository
+            ),
+            release=RepositoryReleasesDataUpdateCoordinator(
+                hass=hass, entry=entry, client=client, repository=repository
+            ),
+        )
+        hass.data[DOMAIN][entry.entry_id][repository] = coordinators
+
+        await asyncio.gather(
+            coordinator.async_config_entry_first_refresh()
+            for coordinator in coordinators.list
+        )
 
     hass.data[DOMAIN][entry.entry_id] = coordinators
 
