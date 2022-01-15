@@ -35,7 +35,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         **{"client_name": SERVER_SOFTWARE},
     )
 
-    repositories: list[str] = entry.data["repositories"]
+    repositories: list[str] = entry.options["repositories"]
 
     for repository in repositories:
         coordinators: DataUpdateCoordinators = {
@@ -64,6 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     hass.config_entries.async_setup_platforms(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     return True
 
@@ -74,3 +75,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data.pop(DOMAIN)
     return unload_ok
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Handle an options update."""
+    await hass.config_entries.async_reload(entry.entry_id)

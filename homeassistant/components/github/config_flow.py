@@ -15,7 +15,7 @@ from aiogithubapi.const import OAUTH_USER_LOGIN
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import (
     SERVER_SOFTWARE,
@@ -68,7 +68,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         """Initialize."""
-        self._errors = {}
         self._device: GitHubDeviceAPI | None = None
         self._activation: GitHubLoginOauthModel | None = None
         self._login_device: GitHubLoginDeviceModel | None = None
@@ -77,7 +76,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the initial step."""
-        self._errors = {}
         if self._async_current_entries():
             return self.async_abort(reason="already_configured")
 
@@ -136,10 +134,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 step_id="repositories",
                 data_schema=vol.Schema(
                     {
-                        vol.Required("repositories"): cv.multi_select(repositories),
+                        vol.Required("repositories"): cv.multi_select(
+                            {k: k for k in repositories}
+                        ),
                     }
                 ),
-                errors=self._errors,
             )
 
         return self.async_create_entry(
@@ -147,6 +146,49 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data={
                 "access_token": self._activation.access_token,
                 "scope": self._activation.scope,
-                "repositories": user_input["repositories"],
             },
+            options={"repositories": user_input["repositories"]},
         )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry):
+        """Get the options flow for this handler."""
+        return OptionsFlowHandler(config_entry)
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle a option flow for GitHub."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None):
+        """Handle options flow."""
+        if not user_input:
+            configured_repositories: list[str] = self.config_entry.options[
+                "repositories"
+            ]
+            repositories = await _stared_repositories(
+                self.hass, self.config_entry.data["access_token"]
+            )
+
+            # In case the user has removed a starred repository that is already tracked
+            for repository in configured_repositories:
+                if repository not in repositories:
+                    repositories.append(repository)
+
+            return self.async_show_form(
+                step_id="init",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required(
+                            "repositories",
+                            default=configured_repositories,
+                        ): cv.multi_select({k: k for k in repositories}),
+                    }
+                ),
+            )
+
+        return self.async_create_entry(title="", data=user_input)

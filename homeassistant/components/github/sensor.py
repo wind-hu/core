@@ -198,9 +198,10 @@ class GitHubSensorLatestReleaseEntity(GitHubSensorLatestBaseEntity):
     @property
     def extra_state_attributes(self) -> Mapping[str, str | None]:
         """Return the extra state attributes."""
+        release = self.coordinator.data
         return {
-            "url": self.coordinator.data.html_url,
-            "tag": self.coordinator.data.tag_name,
+            "url": release.html_url,
+            "tag": release.tag_name,
         }
 
 

@@ -15,5 +15,15 @@
             "already_configured": "Device is already configured",
             "could_not_register": "Could not register integration with GitHub"
         }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "data": {
+                    "repositories": "Select repositories to track."
+                },
+                "title": "Configure options"
+            }
+        }
     }
 }

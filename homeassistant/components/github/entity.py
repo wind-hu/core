@@ -10,6 +10,8 @@ from .coordinator import GitHubBaseDataUpdateCoordinator
 class GitHubEntity(CoordinatorEntity):
     """Defines a base GitHub entity."""
 
+    _attr_attribution = "Data provided by the GitHub API"
+
     coordinator: GitHubBaseDataUpdateCoordinator
 
     @property
