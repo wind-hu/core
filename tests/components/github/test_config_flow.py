@@ -1,89 +1,66 @@
 """Test the GitHub config flow."""
-from unittest.mock import patch
+import datetime
+import json
 
 from homeassistant import config_entries
-from homeassistant.components.github.config_flow import CannotConnect, InvalidAuth
 from homeassistant.components.github.const import DOMAIN
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import RESULT_TYPE_CREATE_ENTRY, RESULT_TYPE_FORM
+from homeassistant.data_entry_flow import (
+    RESULT_TYPE_CREATE_ENTRY,
+    RESULT_TYPE_SHOW_PROGRESS,
+)
+
+from tests.common import async_fire_time_changed, load_fixture
+from tests.test_util.aiohttp import AiohttpClientMocker
 
 
-async def test_form(hass: HomeAssistant) -> None:
-    """Test we get the form."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
+async def test_full_user_flow_implementation(
+    hass: HomeAssistant,
+    mock_setup_entry: None,
+    aioclient_mock: AiohttpClientMocker,
+) -> None:
+    """Test the full manual user flow from start to finish."""
+    oauth_access_token_fixture = json.loads(
+        load_fixture("oauth_access_token.json", DOMAIN)
     )
-    assert result["type"] == RESULT_TYPE_FORM
-    assert result["errors"] is None
-
-    with patch(
-        "homeassistant.components.github.config_flow.PlaceholderHub.authenticate",
-        return_value=True,
-    ), patch(
-        "homeassistant.components.github.async_setup_entry",
-        return_value=True,
-    ) as mock_setup_entry:
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                "host": "1.1.1.1",
-                "username": "test-username",
-                "password": "test-password",
-            },
-        )
-        await hass.async_block_till_done()
-
-    assert result2["type"] == RESULT_TYPE_CREATE_ENTRY
-    assert result2["title"] == "Name of the device"
-    assert result2["data"] == {
-        "host": "1.1.1.1",
-        "username": "test-username",
-        "password": "test-password",
-    }
-    assert len(mock_setup_entry.mock_calls) == 1
-
-
-async def test_form_invalid_auth(hass: HomeAssistant) -> None:
-    """Test we handle invalid auth."""
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    aioclient_mock.post(
+        "https://github.com/login/device/code",
+        json=json.loads(load_fixture("oauth_device_code.json", DOMAIN)),
+        headers={"Content-Type": "application/json"},
+    )
+    aioclient_mock.post(
+        "https://github.com/login/oauth/access_token",
+        json=oauth_access_token_fixture,
+        headers={"Content-Type": "application/json"},
     )
 
-    with patch(
-        "homeassistant.components.github.config_flow.PlaceholderHub.authenticate",
-        side_effect=InvalidAuth,
-    ):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                "host": "1.1.1.1",
-                "username": "test-username",
-                "password": "test-password",
-            },
-        )
-
-    assert result2["type"] == RESULT_TYPE_FORM
-    assert result2["errors"] == {"base": "invalid_auth"}
-
-
-async def test_form_cannot_connect(hass: HomeAssistant) -> None:
-    """Test we handle cannot connect error."""
     result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": config_entries.SOURCE_USER}
+        DOMAIN,
+        context={"source": config_entries.SOURCE_USER},
     )
 
-    with patch(
-        "homeassistant.components.github.config_flow.PlaceholderHub.authenticate",
-        side_effect=CannotConnect,
-    ):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                "host": "1.1.1.1",
-                "username": "test-username",
-                "password": "test-password",
-            },
-        )
+    assert result["step_id"] == "device"
+    assert result["type"] == RESULT_TYPE_SHOW_PROGRESS
+    assert "flow_id" in result
 
-    assert result2["type"] == RESULT_TYPE_FORM
-    assert result2["errors"] == {"base": "cannot_connect"}
+    async_fire_time_changed(
+        hass, datetime.datetime.now() + datetime.timedelta(seconds=1)
+    )
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"])
+    await hass.async_block_till_done()
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            "repositories": ["home-assistant/core"],
+        },
+    )
+
+    assert result["title"] == ""
+    assert result["type"] == RESULT_TYPE_CREATE_ENTRY
+    assert "data" in result
+    assert result["data"]["access_token"] == oauth_access_token_fixture["access_token"]
+    assert result["data"]["scope"] == ""
+    assert "options" in result
+    assert result["options"]["repositories"] == ["home-assistant/core"]
