@@ -70,7 +70,6 @@ async def test_full_user_flow_implementation(
 
 async def test_already_configured(
     hass: HomeAssistant,
-    mock_setup_entry: None,
     mock_config_entry: MockConfigEntry,
 ) -> None:
     """Test we abort if already configured."""
