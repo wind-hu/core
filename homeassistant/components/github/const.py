@@ -6,6 +6,7 @@ from typing import NamedTuple
 from aiogithubapi import GitHubIssueModel
 
 DOMAIN = "github"
+DEFAULT_REPOSITORIES = ["home-assistant/core"]
 LOGGER: Logger = getLogger(__package__)
 DEFAULT_UPDATE_INTERVAL = timedelta(seconds=300)
 

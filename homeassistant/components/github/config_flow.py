@@ -24,7 +24,7 @@ from homeassistant.helpers.aiohttp_client import (
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.event import async_call_later
 
-from .const import CLIENT_ID, DOMAIN, LOGGER
+from .const import CLIENT_ID, DEFAULT_REPOSITORIES, DOMAIN, LOGGER
 
 
 async def _stared_repositories(
@@ -58,7 +58,7 @@ async def _stared_repositories(
     except GitHubException:
         pass
 
-    return ["home-assistant/core"]
+    return DEFAULT_REPOSITORIES
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
