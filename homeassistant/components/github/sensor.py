@@ -58,13 +58,13 @@ SENSOR_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
         coordinator_key="information",
     ),
     GitHubSensorEntityDescription(
-        key="watchers_count",
-        name="Watchers",
+        key="subscribers_count",
+        name="Subscribers",
         icon="mdi:glasses",
-        native_unit_of_measurement="Watchers",
+        native_unit_of_measurement="Subscribers",
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.watchers_count,
+        value_fn=lambda data: data.subscribers_count,
         coordinator_key="information",
     ),
     GitHubSensorEntityDescription(
