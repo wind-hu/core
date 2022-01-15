@@ -1,20 +1,19 @@
 {
     "config": {
-        "abort": {
-            "already_configured": "Device is already configured"
-        },
-        "error": {
-            "cannot_connect": "Failed to connect",
-            "invalid_auth": "Invalid authentication",
-            "unknown": "Unexpected error"
-        },
         "step": {
-            "device": {
-                "title": "Waiting for device activation"
+            "repositories": {
+                "title": "Configure repositories",
+                "data": {
+                    "repositories": "Select repositories to track."
+                }
             }
         },
         "progress": {
             "wait_for_device": "1. Open {url} \n2.Paste the following key to authorize the integration: \n```\n{code}\n```\n"
+        },
+        "abort": {
+            "already_configured": "Device is already configured",
+            "could_not_register": "Could not register integration with GitHub"
         }
     }
 }

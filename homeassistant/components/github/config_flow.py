@@ -79,7 +79,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the initial step."""
         self._errors = {}
         if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
+            return self.async_abort(reason="already_configured")
 
         return await self.async_step_device(user_input)
 
@@ -112,7 +112,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._login_device = response.data
             except GitHubException as exception:
                 LOGGER.exception(exception)
-                return self.async_abort(reason="github")
+                return self.async_abort(reason="could_not_register")
 
             return self.async_show_progress(
                 step_id="device",
