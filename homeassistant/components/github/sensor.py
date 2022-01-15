@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -19,8 +18,10 @@ from homeassistant.helpers.typing import StateType
 
 from .const import DOMAIN
 from .coordinator import (
+    CoordinatorKeyType,
     DataUpdateCoordinators,
     GitHubBaseDataUpdateCoordinator,
+    RepositoryCommitDataUpdateCoordinator,
     RepositoryIssueDataUpdateCoordinator,
     RepositoryReleaseDataUpdateCoordinator,
 )
@@ -31,7 +32,8 @@ from .entity import GitHubEntity
 class GitHubSensorEntityDescriptionMixin:
     """Mixin for required GitHub description keys."""
 
-    state_fn: Callable[[Any], StateType | datetime]
+    coordinator_key: CoordinatorKeyType
+    value_fn: Callable[[Any], StateType]
 
 
 @dataclass
@@ -40,69 +42,66 @@ class GitHubSensorEntityDescription(
 ):
     """Describes GitHub sensor entity."""
 
+    icon: str = "mdi:github"
+    entity_registry_enabled_default: bool = False
 
-INFORMATION_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
+
+SENSOR_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
     GitHubSensorEntityDescription(
         key="stargazers_count",
         name="Stars",
         icon="mdi:star",
         native_unit_of_measurement="Stars",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        state_fn=lambda data: data.stargazers_count,
+        value_fn=lambda data: data.stargazers_count,
+        coordinator_key="information",
     ),
     GitHubSensorEntityDescription(
         key="watchers_count",
         name="Watchers",
         icon="mdi:glasses",
         native_unit_of_measurement="Watchers",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        state_fn=lambda data: data.watchers_count,
+        value_fn=lambda data: data.watchers_count,
+        coordinator_key="information",
     ),
     GitHubSensorEntityDescription(
         key="forks_count",
         name="Forks",
         icon="mdi:source-fork",
         native_unit_of_measurement="Forks",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        state_fn=lambda data: data.forks_count,
+        value_fn=lambda data: data.forks_count,
+        coordinator_key="information",
     ),
     GitHubSensorEntityDescription(
         key="default_branch",
         name="Default branch",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        state_fn=lambda data: data.default_branch,
+        value_fn=lambda data: data.default_branch,
+        coordinator_key="information",
     ),
-)
-
-ISSUES_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
     GitHubSensorEntityDescription(
         key="issues_count",
         name="Issues",
         native_unit_of_measurement="Issues",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        state_fn=lambda data: len(data.issues),
+        value_fn=lambda data: len(data.issues),
+        coordinator_key="issue",
     ),
-)
-
-PULLS_DESCRIPTIONS: tuple[GitHubSensorEntityDescription, ...] = (
     GitHubSensorEntityDescription(
         key="pulls_count",
         name="Pull Requests",
         native_unit_of_measurement="Pull Requests",
-        entity_registry_enabled_default=False,
         entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        state_fn=lambda data: len(data.pulls),
+        value_fn=lambda data: len(data.pulls),
+        coordinator_key="issue",
     ),
 )
 
@@ -117,26 +116,20 @@ async def async_setup_entry(
     entities: list[GitHubSensorBaseEntity] = []
 
     for coordinators in repositories.values():
-        for description in INFORMATION_DESCRIPTIONS:
-            entities.append(
-                GitHubSensorInformationEntity(coordinators.information, description)
+        entities.extend(
+            sensor(coordinators)
+            for sensor in (
+                GitHubSensorLatestCommitEntity,
+                GitHubSensorLatestIssueEntity,
+                GitHubSensorLatestPullEntity,
+                GitHubSensorLatestReleaseEntity,
             )
+        )
 
-        if coordinators.release.data is not None:
-            entities.append(GitHubSensorLastReleaseEntity(coordinators.release))
-
-        entities.append(GitHubSensorLastPullEntity(coordinators.issue))
-        for description in PULLS_DESCRIPTIONS:
-            entities.append(
-                GitHubSensorInformationEntity(coordinators.issue, description)
-            )
-
-        if coordinators.information.data.has_issues:
-            entities.append(GitHubSensorLastIssueEntity(coordinators.issue))
-            for description in ISSUES_DESCRIPTIONS:
-                entities.append(
-                    GitHubSensorInformationEntity(coordinators.issue, description)
-                )
+        entities.extend(
+            GitHubSensorDescriptionEntity(coordinators, description)
+            for description in SENSOR_DESCRIPTIONS
+        )
 
     async_add_entities(entities)
 
@@ -144,45 +137,58 @@ async def async_setup_entry(
 class GitHubSensorBaseEntity(GitHubEntity, SensorEntity):
     """Defines a base GitHub sensor entity."""
 
-    _attr_icon = "mdi:github"
-    _attr_entity_registry_enabled_default = False
 
+class GitHubSensorDescriptionEntity(GitHubSensorBaseEntity):
+    """Defines a GitHub sensor entity based on entity descriptions."""
 
-class GitHubSensorInformationEntity(GitHubSensorBaseEntity):
-    """Defines a GitHub information sensor entity."""
-
-    entity_description: GitHubSensorEntityDescription
     coordinator: GitHubBaseDataUpdateCoordinator
+    entity_description: GitHubSensorEntityDescription
 
     def __init__(
         self,
-        coordinator: GitHubBaseDataUpdateCoordinator,
+        coordinators: DataUpdateCoordinators,
         description: GitHubSensorEntityDescription,
     ) -> None:
         """Initialize a GitHub sensor entity."""
-        super().__init__(coordinator=coordinator)
         self.entity_description = description
-        self._attr_name = f"{coordinator.repository} {description.name}"
-        self._attr_unique_id = f"{coordinator.repository}_{description.key}"
+        _coordinator = coordinators[description.coordinator_key]
+        super().__init__(coordinator=_coordinator)
+        self._attr_name = f"{_coordinator.repository} {description.name}"
+        self._attr_unique_id = f"{_coordinator.repository}_{description.key}"
 
     @property
-    def native_value(self) -> datetime | StateType:
+    def native_value(self) -> StateType:
         """Return the state of the sensor."""
-        return self.entity_description.state_fn(self.coordinator.data)
+        return self.entity_description.value_fn(self.coordinator.data)
 
 
-class GitHubSensorLastReleaseEntity(GitHubSensorBaseEntity):
+class GitHubSensorLatestBaseEntity(GitHubSensorBaseEntity):
+    """Defines a base GitHub latest sensor entity."""
+
+    _name: str = "Latest"
+    _coordinator_key: CoordinatorKeyType = "information"
+    _attr_entity_registry_enabled_default = False
+    _attr_icon = "mdi:github"
+
+    def __init__(self, coordinators: DataUpdateCoordinators) -> None:
+        """Initialize a GitHub sensor entity."""
+        coordinator = coordinators[self._coordinator_key]
+        super().__init__(coordinator=coordinator)
+        self._attr_name = f"{coordinator.repository} {self._name}"
+        self._attr_unique_id = (
+            f"{coordinator.repository}_{self._name.lower().replace(' ', '_')}"
+        )
+
+
+class GitHubSensorLatestReleaseEntity(GitHubSensorLatestBaseEntity):
     """Defines a GitHub release sensor entity."""
+
+    _coordinator_key: CoordinatorKeyType = "release"
+    _name: str = "Latest Release"
 
     _attr_entity_registry_enabled_default = True
 
     coordinator: RepositoryReleaseDataUpdateCoordinator
-
-    def __init__(self, coordinator: GitHubBaseDataUpdateCoordinator) -> None:
-        """Initialize a GitHub sensor entity."""
-        super().__init__(coordinator=coordinator)
-        self._attr_name = f"{coordinator.repository} Last Release"
-        self._attr_unique_id = f"{coordinator.repository}_last_release"
 
     @property
     def native_value(self) -> StateType:
@@ -190,7 +196,7 @@ class GitHubSensorLastReleaseEntity(GitHubSensorBaseEntity):
         return self.coordinator.data.name
 
     @property
-    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+    def extra_state_attributes(self) -> Mapping[str, str | None]:
         """Return the extra state attributes."""
         return {
             "url": self.coordinator.data.html_url,
@@ -198,16 +204,13 @@ class GitHubSensorLastReleaseEntity(GitHubSensorBaseEntity):
         }
 
 
-class GitHubSensorLastIssueEntity(GitHubSensorBaseEntity):
+class GitHubSensorLatestIssueEntity(GitHubSensorLatestBaseEntity):
     """Defines a GitHub issue sensor entity."""
 
-    coordinator: RepositoryIssueDataUpdateCoordinator
+    _name: str = "Latest Issue"
+    _coordinator_key: CoordinatorKeyType = "issue"
 
-    def __init__(self, coordinator: GitHubBaseDataUpdateCoordinator) -> None:
-        """Initialize a GitHub sensor entity."""
-        super().__init__(coordinator=coordinator)
-        self._attr_name = f"{coordinator.repository} Last Issue"
-        self._attr_unique_id = f"{coordinator.repository}_last_issue"
+    coordinator: RepositoryIssueDataUpdateCoordinator
 
     @property
     def available(self) -> bool:
@@ -220,7 +223,7 @@ class GitHubSensorLastIssueEntity(GitHubSensorBaseEntity):
         return self.coordinator.data.issues[0].title
 
     @property
-    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+    def extra_state_attributes(self) -> Mapping[str, str | int | None]:
         """Return the extra state attributes."""
         issue = self.coordinator.data.issues[0]
         return {
@@ -229,16 +232,13 @@ class GitHubSensorLastIssueEntity(GitHubSensorBaseEntity):
         }
 
 
-class GitHubSensorLastPullEntity(GitHubSensorBaseEntity):
+class GitHubSensorLatestPullEntity(GitHubSensorLatestBaseEntity):
     """Defines a GitHub pull sensor entity."""
 
-    coordinator: RepositoryIssueDataUpdateCoordinator
+    _coordinator_key: CoordinatorKeyType = "issue"
+    _name: str = "Latest Pull Request"
 
-    def __init__(self, coordinator: GitHubBaseDataUpdateCoordinator) -> None:
-        """Initialize a GitHub sensor entity."""
-        super().__init__(coordinator=coordinator)
-        self._attr_name = f"{coordinator.repository} Last Pull Request"
-        self._attr_unique_id = f"{coordinator.repository}_last_pull_request"
+    coordinator: RepositoryIssueDataUpdateCoordinator
 
     @property
     def available(self) -> bool:
@@ -251,10 +251,33 @@ class GitHubSensorLastPullEntity(GitHubSensorBaseEntity):
         return self.coordinator.data.pulls[0].title
 
     @property
-    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+    def extra_state_attributes(self) -> Mapping[str, str | int | None]:
         """Return the extra state attributes."""
         pull = self.coordinator.data.pulls[0]
         return {
             "url": pull.html_url,
             "number": pull.number,
+        }
+
+
+class GitHubSensorLatestCommitEntity(GitHubSensorLatestBaseEntity):
+    """Defines a GitHub commit sensor entity."""
+
+    _coordinator_key: CoordinatorKeyType = "commit"
+    _name: str = "Latest Commit"
+
+    coordinator: RepositoryCommitDataUpdateCoordinator
+
+    @property
+    def native_value(self) -> StateType:
+        """Return the state of the sensor."""
+        return self.coordinator.data.commit.message
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, str | int | None]:
+        """Return the extra state attributes."""
+        return {
+            "sha": self.coordinator.data.sha,
+            "url": self.coordinator.data.html_url,
+            "author": self.coordinator.data.author.login,
         }

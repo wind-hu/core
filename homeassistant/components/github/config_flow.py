@@ -4,7 +4,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from aiogithubapi import GitHubAPI, GitHubDeviceAPI, GitHubException
+from aiogithubapi import (
+    GitHubAPI,
+    GitHubDeviceAPI,
+    GitHubException,
+    GitHubLoginDeviceModel,
+    GitHubLoginOauthModel,
+)
 from aiogithubapi.const import OAUTH_USER_LOGIN
 import voluptuous as vol
 
@@ -63,10 +69,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self):
         """Initialize."""
         self._errors = {}
-        self.device = None
-        self.activation = None
-        self._progress_task = None
-        self._login_device = None
+        self._device: GitHubDeviceAPI | None = None
+        self._activation: GitHubLoginOauthModel | None = None
+        self._login_device: GitHubLoginDeviceModel | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -86,24 +91,24 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 async_call_later(self.hass, 0, _wait_for_activation)
                 return
 
-            response = await self.device.activation(
+            response = await self._device.activation(
                 device_code=self._login_device.device_code
             )
-            self.activation = response.data
+            self._activation = response.data
             self.hass.async_create_task(
                 self.hass.config_entries.flow.async_configure(flow_id=self.flow_id)
             )
 
-        if not self.activation:
-            if not self.device:
-                self.device = GitHubDeviceAPI(
+        if not self._activation:
+            if not self._device:
+                self._device = GitHubDeviceAPI(
                     client_id=CLIENT_ID,
                     session=async_get_clientsession(self.hass),
                     **{"client_name": SERVER_SOFTWARE},
                 )
             async_call_later(self.hass, 0, _wait_for_activation)
             try:
-                response = await self.device.register()
+                response = await self._device.register()
                 self._login_device = response.data
             except GitHubException as exception:
                 LOGGER.exception(exception)
@@ -125,9 +130,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if not user_input:
             repositories = await _stared_repositories(
-                self.hass, self.activation.access_token
+                self.hass, self._activation.access_token
             )
-            LOGGER.warning(repositories)
             return self.async_show_form(
                 step_id="repositories",
                 data_schema=vol.Schema(
@@ -141,7 +145,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(
             title="",
             data={
-                "access_token": self.activation.access_token,
+                "access_token": self._activation.access_token,
+                "scope": self._activation.scope,
                 "repositories": user_input["repositories"],
             },
         )

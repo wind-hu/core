@@ -16,6 +16,7 @@ from homeassistant.helpers.aiohttp_client import (
 from .const import DOMAIN
 from .coordinator import (
     DataUpdateCoordinators,
+    RepositoryCommitDataUpdateCoordinator,
     RepositoryInformationDataUpdateCoordinator,
     RepositoryIssueDataUpdateCoordinator,
     RepositoryReleaseDataUpdateCoordinator,
@@ -37,23 +38,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     repositories: list[str] = entry.data["repositories"]
 
     for repository in repositories:
-        coordinators = DataUpdateCoordinators(
-            information=RepositoryInformationDataUpdateCoordinator(
+        coordinators: DataUpdateCoordinators = {
+            "information": RepositoryInformationDataUpdateCoordinator(
                 hass=hass, entry=entry, client=client, repository=repository
             ),
-            release=RepositoryReleaseDataUpdateCoordinator(
+            "release": RepositoryReleaseDataUpdateCoordinator(
                 hass=hass, entry=entry, client=client, repository=repository
             ),
-            issue=RepositoryIssueDataUpdateCoordinator(
+            "issue": RepositoryIssueDataUpdateCoordinator(
                 hass=hass, entry=entry, client=client, repository=repository
             ),
-        )
+            "commit": RepositoryCommitDataUpdateCoordinator(
+                hass=hass, entry=entry, client=client, repository=repository
+            ),
+        }
         hass.data[DOMAIN][repository] = coordinators
 
         await asyncio.gather(
             *(
-                coordinator.async_config_entry_first_refresh()
-                for coordinator in coordinators.list
+                coordinators["information"].async_config_entry_first_refresh(),
+                coordinators["release"].async_config_entry_first_refresh(),
+                coordinators["issue"].async_config_entry_first_refresh(),
+                coordinators["commit"].async_config_entry_first_refresh(),
             )
         )
 

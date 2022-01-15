@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from typing import Literal, TypedDict
 
 from aiogithubapi import (
     GitHubAPI,
+    GitHubCommitModel,
     GitHubException,
     GitHubIssueModel,
     GitHubReleaseModel,
@@ -18,6 +19,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import DEFAULT_UPDATE_INTERVAL, DOMAIN, LOGGER, IssuesPulls
 
+CoordinatorKeyType = Literal["information", "release", "issue", "commit"]
+
 
 class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator[T]):
     """Base class for GitHub data update coordinators."""
@@ -29,7 +32,7 @@ class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator[T]):
         client: GitHubAPI,
         repository: str,
     ) -> None:
-        """Initialize base GitHub data updater."""
+        """Initialize GitHub data update coordinator base class."""
         self.config_entry = entry
         self.repository = repository
         self._client = client
@@ -41,35 +44,39 @@ class GitHubBaseDataUpdateCoordinator(DataUpdateCoordinator[T]):
             update_interval=DEFAULT_UPDATE_INTERVAL,
         )
 
+    async def fetch_data(self) -> T:
+        """Fetch data from GitHub API."""
+
+    async def _async_update_data(self) -> T:
+        try:
+            return await self.fetch_data()
+        except GitHubException as exception:
+            LOGGER.exception(exception)
+            raise UpdateFailed(exception) from exception
+
 
 class RepositoryInformationDataUpdateCoordinator(
     GitHubBaseDataUpdateCoordinator[GitHubRepositoryModel]
 ):
     """Data update coordinator for repository information."""
 
-    async def _async_update_data(self) -> GitHubRepositoryModel | None:
+    async def fetch_data(self) -> GitHubRepositoryModel:
         """Get the latest data from GitHub."""
-        try:
-            result = await self._client.repos.get(self.repository)
-            return result.data
-        except GitHubException as exception:
-            raise UpdateFailed(exception) from exception
+        result = await self._client.repos.get(self.repository)
+        return result.data
 
 
 class RepositoryReleaseDataUpdateCoordinator(
     GitHubBaseDataUpdateCoordinator[GitHubReleaseModel]
 ):
-    """Data update coordinator for repository releases."""
+    """Data update coordinator for repository release."""
 
-    async def _async_update_data(self) -> GitHubReleaseModel | None:
+    async def fetch_data(self) -> GitHubReleaseModel | None:
         """Get the latest data from GitHub."""
-        try:
-            result = await self._client.repos.releases.list(
-                self.repository, **{"params": {"per_page": 1}}
-            )
-            return result.data[0] if result.data else None
-        except GitHubException as exception:
-            raise UpdateFailed(exception) from exception
+        result = await self._client.repos.releases.list(
+            self.repository, **{"params": {"per_page": 1}}
+        )
+        return result.data[0] if result.data else None
 
 
 class RepositoryIssueDataUpdateCoordinator(
@@ -77,7 +84,7 @@ class RepositoryIssueDataUpdateCoordinator(
 ):
     """Data update coordinator for repository issues."""
 
-    async def _async_update_data(self) -> IssuesPulls:
+    async def fetch_data(self) -> IssuesPulls:
         """Get the latest data from GitHub."""
 
         async def _get_issues():
@@ -101,30 +108,35 @@ class RepositoryIssueDataUpdateCoordinator(
 
             return response.data
 
-        try:
-            all_issues = await _get_issues()
-        except GitHubException as exception:
-            raise UpdateFailed(exception) from exception
-        else:
-            issues: list[GitHubIssueModel] = [
-                issue for issue in all_issues or [] if issue.pull_request is None
-            ]
-            pulls: list[GitHubIssueModel] = [
-                issue for issue in all_issues or [] if issue.pull_request is not None
-            ]
+        all_issues = await _get_issues()
 
-            return IssuesPulls(issues=issues, pulls=pulls)
+        issues: list[GitHubIssueModel] = [
+            issue for issue in all_issues or [] if issue.pull_request is None
+        ]
+        pulls: list[GitHubIssueModel] = [
+            issue for issue in all_issues or [] if issue.pull_request is not None
+        ]
+
+        return IssuesPulls(issues=issues, pulls=pulls)
 
 
-@dataclass
-class DataUpdateCoordinators:
+class RepositoryCommitDataUpdateCoordinator(
+    GitHubBaseDataUpdateCoordinator[GitHubCommitModel]
+):
+    """Data update coordinator for repository commit."""
+
+    async def fetch_data(self) -> GitHubCommitModel | None:
+        """Get the latest data from GitHub."""
+        result = await self._client.repos.list_commits(
+            self.repository, **{"params": {"per_page": 1}}
+        )
+        return result.data[0] if result.data else None
+
+
+class DataUpdateCoordinators(TypedDict):
     """Custom data update coordinators for the GitHub integration."""
 
     information: RepositoryInformationDataUpdateCoordinator
     release: RepositoryReleaseDataUpdateCoordinator
     issue: RepositoryIssueDataUpdateCoordinator
-
-    @property
-    def list(self) -> list[GitHubBaseDataUpdateCoordinator]:
-        """Return a list of all coordinators."""
-        return [self.information, self.release, self.issue]
+    commit: RepositoryCommitDataUpdateCoordinator
