@@ -1,5 +1,8 @@
 """Config flow to configure the Netgear integration."""
+from __future__ import annotations
+
 import logging
+from typing import cast
 from urllib.parse import urlparse
 
 from pynetgear import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_USER
@@ -16,6 +19,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.util.network import is_ipv4_address
 
 from .const import (
     CONF_CONSIDER_HOME,
@@ -38,11 +42,7 @@ def _discovery_schema_with_defaults(discovery_info):
 
 
 def _user_schema_with_defaults(user_input):
-    user_schema = {
-        vol.Optional(CONF_HOST, default=user_input.get(CONF_HOST, "")): str,
-        vol.Optional(CONF_PORT, default=user_input.get(CONF_PORT, DEFAULT_PORT)): int,
-        vol.Optional(CONF_SSL, default=user_input.get(CONF_SSL, False)): bool,
-    }
+    user_schema = {vol.Optional(CONF_HOST, default=user_input.get(CONF_HOST, "")): str}
     user_schema.update(_ordered_shared_schema(user_input))
 
     return vol.Schema(user_schema)
@@ -123,11 +123,15 @@ class NetgearFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_ssdp(self, discovery_info: ssdp.SsdpServiceInfo) -> FlowResult:
         """Initialize flow from ssdp."""
-        updated_data = {}
+        updated_data: dict[str, str | int | bool] = {}
 
         device_url = urlparse(discovery_info.ssdp_location)
-        if device_url.hostname:
-            updated_data[CONF_HOST] = device_url.hostname
+        if hostname := device_url.hostname:
+            hostname = cast(str, hostname)
+            updated_data[CONF_HOST] = hostname
+
+        if not is_ipv4_address(str(hostname)):
+            return self.async_abort(reason="not_ipv4_address")
 
         _LOGGER.debug("Netgear ssdp discovery info: %s", discovery_info)
 
@@ -169,8 +173,8 @@ class NetgearFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             return await self._show_setup_form()
 
         host = user_input.get(CONF_HOST, self.placeholders[CONF_HOST])
-        port = user_input.get(CONF_PORT, self.placeholders[CONF_PORT])
-        ssl = user_input.get(CONF_SSL, self.placeholders[CONF_SSL])
+        port = self.placeholders[CONF_PORT]
+        ssl = self.placeholders[CONF_SSL]
         username = user_input.get(CONF_USERNAME, self.placeholders[CONF_USERNAME])
         password = user_input[CONF_PASSWORD]
         if not username:
@@ -187,18 +191,18 @@ class NetgearFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if errors:
             return await self._show_setup_form(user_input, errors)
 
-        # Check if already configured
-        info = await self.hass.async_add_executor_job(api.get_info)
-        await self.async_set_unique_id(info["SerialNumber"], raise_on_progress=False)
-        self._abort_if_unique_id_configured()
-
         config_data = {
             CONF_USERNAME: username,
             CONF_PASSWORD: password,
             CONF_HOST: host,
-            CONF_PORT: port,
-            CONF_SSL: ssl,
+            CONF_PORT: api.port,
+            CONF_SSL: api.ssl,
         }
+
+        # Check if already configured
+        info = await self.hass.async_add_executor_job(api.get_info)
+        await self.async_set_unique_id(info["SerialNumber"], raise_on_progress=False)
+        self._abort_if_unique_id_configured(updates=config_data)
 
         if info.get("ModelName") is not None and info.get("DeviceName") is not None:
             name = f"{info['ModelName']} - {info['DeviceName']}"

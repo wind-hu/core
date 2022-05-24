@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from zwave_js_server.const import (
-    CommandClass,
+    InclusionState,
     InclusionStrategy,
     LogLevel,
     Protocols,
@@ -27,14 +27,15 @@ from zwave_js_server.model.controller import (
     QRProvisioningInformation,
 )
 from zwave_js_server.model.node import Node
-from zwave_js_server.model.value import _get_value_id_from_dict, get_value_id
 
 from homeassistant.components.websocket_api.const import ERR_NOT_FOUND
 from homeassistant.components.zwave_js.api import (
+    ADDITIONAL_PROPERTIES,
     APPLICATION_VERSION,
     CLIENT_SIDE_AUTH,
     COMMAND_CLASS_ID,
     CONFIG,
+    DEVICE_ID,
     DSK,
     ENABLED,
     ENTRY_ID,
@@ -70,9 +71,15 @@ from homeassistant.components.zwave_js.const import (
     CONF_DATA_COLLECTION_OPTED_IN,
     DOMAIN,
 )
+from homeassistant.components.zwave_js.helpers import get_device_id
 from homeassistant.helpers import device_registry as dr
 
-from .common import PROPERTY_ULTRAVIOLET
+
+def get_device(hass, node):
+    """Get device ID for a node."""
+    dev_reg = dr.async_get(hass)
+    device_id = get_device_id(node.client, node)
+    return dev_reg.async_get_device({device_id})
 
 
 async def test_network_status(hass, integration, hass_ws_client):
@@ -80,14 +87,16 @@ async def test_network_status(hass, integration, hass_ws_client):
     entry = integration
     ws_client = await hass_ws_client(hass)
 
-    await ws_client.send_json(
-        {ID: 2, TYPE: "zwave_js/network_status", ENTRY_ID: entry.entry_id}
-    )
-    msg = await ws_client.receive_json()
-    result = msg["result"]
+    with patch("zwave_js_server.model.controller.Controller.async_get_state"):
+        await ws_client.send_json(
+            {ID: 2, TYPE: "zwave_js/network_status", ENTRY_ID: entry.entry_id}
+        )
+        msg = await ws_client.receive_json()
+        result = msg["result"]
 
     assert result["client"]["ws_server_url"] == "ws://test:3000/zjs"
     assert result["client"]["server_version"] == "1.0.0"
+    assert result["controller"]["inclusion_state"] == InclusionState.IDLE
 
     # Test sending command with not loaded entry fails
     await hass.config_entries.async_unload(entry.entry_id)
@@ -117,12 +126,16 @@ async def test_node_ready(
     node.data["ready"] = False
     client.driver.controller.nodes[node.node_id] = node
 
+    dev_reg = dr.async_get(hass)
+    device = dev_reg.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={get_device_id(client, node)}
+    )
+
     await ws_client.send_json(
         {
             ID: 3,
             TYPE: "zwave_js/node_ready",
-            ENTRY_ID: entry.entry_id,
-            "node_id": node.node_id,
+            DEVICE_ID: device.id,
         }
     )
 
@@ -153,12 +166,12 @@ async def test_node_status(hass, multisensor_6, integration, hass_ws_client):
     ws_client = await hass_ws_client(hass)
 
     node = multisensor_6
+    device = get_device(hass, node)
     await ws_client.send_json(
         {
             ID: 3,
             TYPE: "zwave_js/node_status",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -171,14 +184,14 @@ async def test_node_status(hass, multisensor_6, integration, hass_ws_client):
     assert result["status"] == 1
     assert result["zwave_plus_version"] == 1
     assert result["highest_security_class"] == SecurityClass.S0_LEGACY
+    assert not result["is_controller_node"]
 
     # Test getting non-existent node fails
     await ws_client.send_json(
         {
             ID: 4,
             TYPE: "zwave_js/node_status",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 99999,
+            DEVICE_ID: "fake_device",
         }
     )
     msg = await ws_client.receive_json()
@@ -193,88 +206,7 @@ async def test_node_status(hass, multisensor_6, integration, hass_ws_client):
         {
             ID: 5,
             TYPE: "zwave_js/node_status",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
-        }
-    )
-    msg = await ws_client.receive_json()
-
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_LOADED
-
-
-async def test_node_state(hass, multisensor_6, integration, hass_ws_client):
-    """Test the node_state websocket command."""
-    entry = integration
-    ws_client = await hass_ws_client(hass)
-
-    node = multisensor_6
-
-    # Update a value and ensure it is reflected in the node state
-    value_id = get_value_id(node, CommandClass.SENSOR_MULTILEVEL, PROPERTY_ULTRAVIOLET)
-    event = Event(
-        type="value updated",
-        data={
-            "source": "node",
-            "event": "value updated",
-            "nodeId": node.node_id,
-            "args": {
-                "commandClassName": "Multilevel Sensor",
-                "commandClass": 49,
-                "endpoint": 0,
-                "property": PROPERTY_ULTRAVIOLET,
-                "newValue": 1,
-                "prevValue": 0,
-                "propertyName": PROPERTY_ULTRAVIOLET,
-            },
-        },
-    )
-    node.receive_event(event)
-
-    await ws_client.send_json(
-        {
-            ID: 3,
-            TYPE: "zwave_js/node_state",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
-        }
-    )
-    msg = await ws_client.receive_json()
-
-    # Assert that the data returned doesn't match the stale node state data
-    assert msg["result"] != node.data
-
-    # Replace data for the value we updated and assert the new node data is the same
-    # as what's returned
-    updated_node_data = node.data.copy()
-    for n, value in enumerate(updated_node_data["values"]):
-        if _get_value_id_from_dict(node, value) == value_id:
-            updated_node_data["values"][n] = node.values[value_id].data.copy()
-    assert msg["result"] == updated_node_data
-
-    # Test getting non-existent node fails
-    await ws_client.send_json(
-        {
-            ID: 4,
-            TYPE: "zwave_js/node_state",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 99999,
-        }
-    )
-    msg = await ws_client.receive_json()
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_FOUND
-
-    # Test sending command with not loaded entry fails
-    await hass.config_entries.async_unload(entry.entry_id)
-    await hass.async_block_till_done()
-
-    await ws_client.send_json(
-        {
-            ID: 5,
-            TYPE: "zwave_js/node_state",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -289,12 +221,12 @@ async def test_node_metadata(hass, wallmote_central_scene, integration, hass_ws_
     ws_client = await hass_ws_client(hass)
 
     node = wallmote_central_scene
+    device = get_device(hass, node)
     await ws_client.send_json(
         {
             ID: 3,
             TYPE: "zwave_js/node_metadata",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -328,14 +260,14 @@ async def test_node_metadata(hass, wallmote_central_scene, integration, hass_ws_
         result["device_database_url"]
         == "https://devices.zwave-js.io/?jumpTo=0x0086:0x0002:0x0082:0.0"
     )
+    assert result["comments"] == [{"level": "info", "text": "test"}]
 
     # Test getting non-existent node fails
     await ws_client.send_json(
         {
             ID: 4,
             TYPE: "zwave_js/node_metadata",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 99999,
+            DEVICE_ID: "fake_device",
         }
     )
     msg = await ws_client.receive_json()
@@ -350,81 +282,7 @@ async def test_node_metadata(hass, wallmote_central_scene, integration, hass_ws_
         {
             ID: 5,
             TYPE: "zwave_js/node_metadata",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
-        }
-    )
-    msg = await ws_client.receive_json()
-
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_LOADED
-
-
-async def test_ping_node(
-    hass, wallmote_central_scene, integration, client, hass_ws_client
-):
-    """Test the ping_node websocket command."""
-    entry = integration
-    ws_client = await hass_ws_client(hass)
-    node = wallmote_central_scene
-
-    client.async_send_command.return_value = {"responded": True}
-
-    await ws_client.send_json(
-        {
-            ID: 3,
-            TYPE: "zwave_js/ping_node",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
-        }
-    )
-
-    msg = await ws_client.receive_json()
-    assert msg["success"]
-    assert msg["result"]
-
-    # Test getting non-existent node fails
-    await ws_client.send_json(
-        {
-            ID: 4,
-            TYPE: "zwave_js/ping_node",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 99999,
-        }
-    )
-    msg = await ws_client.receive_json()
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_FOUND
-
-    # Test FailedZWaveCommand is caught
-    with patch(
-        "zwave_js_server.model.node.Node.async_ping",
-        side_effect=FailedZWaveCommand("failed_command", 1, "error message"),
-    ):
-        await ws_client.send_json(
-            {
-                ID: 5,
-                TYPE: "zwave_js/ping_node",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: node.node_id,
-            }
-        )
-        msg = await ws_client.receive_json()
-
-        assert not msg["success"]
-        assert msg["error"]["code"] == "zwave_error"
-        assert msg["error"]["message"] == "Z-Wave error 1: error message"
-
-    # Test sending command with not loaded entry fails
-    await hass.config_entries.async_unload(entry.entry_id)
-    await hass.async_block_till_done()
-
-    await ws_client.send_json(
-        {
-            ID: 6,
-            TYPE: "zwave_js/ping_node",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -557,7 +415,15 @@ async def test_add_node(
 
     event = Event(
         type="interview failed",
-        data={"source": "node", "event": "interview failed", "nodeId": 67},
+        data={
+            "source": "node",
+            "event": "interview failed",
+            "nodeId": 67,
+            "args": {
+                "errorMessage": "error",
+                "isFinal": True,
+            },
+        },
     )
     client.driver.receive_event(event)
 
@@ -629,19 +495,19 @@ async def test_add_node(
         "options": {
             "strategy": InclusionStrategy.SECURITY_S2,
             "provisioning": QRProvisioningInformation(
-                QRCodeVersion.S2,
-                [SecurityClass.S2_UNAUTHENTICATED],
-                "test",
-                1,
-                1,
-                1,
-                1,
-                1,
-                1,
-                "test",
-                None,
-                None,
-                None,
+                version=QRCodeVersion.S2,
+                security_classes=[SecurityClass.S2_UNAUTHENTICATED],
+                dsk="test",
+                generic_device_class=1,
+                specific_device_class=1,
+                installer_icon_type=1,
+                manufacturer_id=1,
+                product_type=1,
+                product_id=1,
+                application_version="test",
+                max_inclusion_request_interval=None,
+                uuid=None,
+                supported_protocols=None,
             ).to_dict(),
         },
     }
@@ -921,6 +787,7 @@ async def test_provision_smart_start_node(hass, integration, client, hass_ws_cli
                 PRODUCT_TYPE: 1,
                 PRODUCT_ID: 1,
                 APPLICATION_VERSION: "test",
+                ADDITIONAL_PROPERTIES: {"name": "test"},
             },
         }
     )
@@ -932,19 +799,20 @@ async def test_provision_smart_start_node(hass, integration, client, hass_ws_cli
     assert client.async_send_command.call_args[0][0] == {
         "command": "controller.provision_smart_start_node",
         "entry": QRProvisioningInformation(
-            QRCodeVersion.SMART_START,
-            [SecurityClass.S2_UNAUTHENTICATED],
-            "test",
-            1,
-            1,
-            1,
-            1,
-            1,
-            1,
-            "test",
-            None,
-            None,
-            None,
+            version=QRCodeVersion.SMART_START,
+            security_classes=[SecurityClass.S2_UNAUTHENTICATED],
+            dsk="test",
+            generic_device_class=1,
+            specific_device_class=1,
+            installer_icon_type=1,
+            manufacturer_id=1,
+            product_type=1,
+            product_id=1,
+            application_version="test",
+            max_inclusion_request_interval=None,
+            uuid=None,
+            supported_protocols=None,
+            additional_properties={"name": "test"},
         ).to_dict(),
     }
 
@@ -1263,6 +1131,7 @@ async def test_parse_qr_code_string(hass, integration, client, hass_ws_client):
         "max_inclusion_request_interval": 1,
         "uuid": "test",
         "supported_protocols": [Protocols.ZWAVE],
+        "additional_properties": {},
     }
 
     assert len(client.async_send_command.call_args_list) == 1
@@ -1686,7 +1555,15 @@ async def test_replace_failed_node(
 
     event = Event(
         type="interview failed",
-        data={"source": "node", "event": "interview failed", "nodeId": 67},
+        data={
+            "source": "node",
+            "event": "interview failed",
+            "nodeId": 67,
+            "args": {
+                "errorMessage": "error",
+                "isFinal": True,
+            },
+        },
     )
     client.driver.receive_event(event)
 
@@ -1762,19 +1639,19 @@ async def test_replace_failed_node(
         "options": {
             "strategy": InclusionStrategy.SECURITY_S2,
             "provisioning": QRProvisioningInformation(
-                QRCodeVersion.S2,
-                [SecurityClass.S2_UNAUTHENTICATED],
-                "test",
-                1,
-                1,
-                1,
-                1,
-                1,
-                1,
-                "test",
-                None,
-                None,
-                None,
+                version=QRCodeVersion.S2,
+                security_classes=[SecurityClass.S2_UNAUTHENTICATED],
+                dsk="test",
+                generic_device_class=1,
+                specific_device_class=1,
+                installer_icon_type=1,
+                manufacturer_id=1,
+                product_type=1,
+                product_id=1,
+                application_version="test",
+                max_inclusion_request_interval=None,
+                uuid=None,
+                supported_protocols=None,
             ).to_dict(),
         },
     }
@@ -1871,19 +1748,38 @@ async def test_remove_failed_node(
     client,
     hass_ws_client,
     nortek_thermostat_removed_event,
+    nortek_thermostat_added_event,
 ):
     """Test the remove_failed_node websocket command."""
     entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, nortek_thermostat)
 
     client.async_send_command.return_value = {"success": True}
 
+    # Test FailedZWaveCommand is caught
+    with patch(
+        "zwave_js_server.model.controller.Controller.async_remove_failed_node",
+        side_effect=FailedZWaveCommand("failed_command", 1, "error message"),
+    ):
+        await ws_client.send_json(
+            {
+                ID: 1,
+                TYPE: "zwave_js/remove_failed_node",
+                DEVICE_ID: device.id,
+            }
+        )
+        msg = await ws_client.receive_json()
+
+        assert not msg["success"]
+        assert msg["error"]["code"] == "zwave_error"
+        assert msg["error"]["message"] == "Z-Wave error 1: error message"
+
     await ws_client.send_json(
         {
-            ID: 3,
+            ID: 2,
             TYPE: "zwave_js/remove_failed_node",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 67,
+            DEVICE_ID: device.id,
         }
     )
 
@@ -1905,29 +1801,15 @@ async def test_remove_failed_node(
     assert msg["event"]["event"] == "node removed"
 
     # Verify device was removed from device registry
-    device = dev_reg.async_get_device(
-        identifiers={(DOMAIN, "3245146787-67")},
-    )
-    assert device is None
-
-    # Test FailedZWaveCommand is caught
-    with patch(
-        "zwave_js_server.model.controller.Controller.async_remove_failed_node",
-        side_effect=FailedZWaveCommand("failed_command", 1, "error message"),
-    ):
-        await ws_client.send_json(
-            {
-                ID: 4,
-                TYPE: "zwave_js/remove_failed_node",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 67,
-            }
+    assert (
+        dev_reg.async_get_device(
+            identifiers={(DOMAIN, "3245146787-67")},
         )
-        msg = await ws_client.receive_json()
+        is None
+    )
 
-        assert not msg["success"]
-        assert msg["error"]["code"] == "zwave_error"
-        assert msg["error"]["message"] == "Z-Wave error 1: error message"
+    # Re-add node so we can test config entry not loaded
+    client.driver.receive_event(nortek_thermostat_added_event)
 
     # Test sending command with not loaded entry fails
     await hass.config_entries.async_unload(entry.entry_id)
@@ -1935,10 +1817,9 @@ async def test_remove_failed_node(
 
     await ws_client.send_json(
         {
-            ID: 5,
+            ID: 3,
             TYPE: "zwave_js/remove_failed_node",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 67,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -2150,6 +2031,7 @@ async def test_stop_healing_network(
 
 async def test_heal_node(
     hass,
+    multisensor_6,
     integration,
     client,
     hass_ws_client,
@@ -2157,6 +2039,7 @@ async def test_heal_node(
     """Test the heal_node websocket command."""
     entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
 
     client.async_send_command.return_value = {"success": True}
 
@@ -2164,8 +2047,7 @@ async def test_heal_node(
         {
             ID: 3,
             TYPE: "zwave_js/heal_node",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 67,
+            DEVICE_ID: device.id,
         }
     )
 
@@ -2182,8 +2064,7 @@ async def test_heal_node(
             {
                 ID: 4,
                 TYPE: "zwave_js/heal_node",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 67,
+                DEVICE_ID: device.id,
             }
         )
         msg = await ws_client.receive_json()
@@ -2200,8 +2081,7 @@ async def test_heal_node(
         {
             ID: 5,
             TYPE: "zwave_js/heal_node",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 67,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -2217,13 +2097,14 @@ async def test_refresh_node_info(
     entry = integration
     ws_client = await hass_ws_client(hass)
 
+    device = get_device(hass, multisensor_6)
+
     client.async_send_command_no_wait.return_value = None
     await ws_client.send_json(
         {
             ID: 1,
             TYPE: "zwave_js/refresh_node_info",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -2269,7 +2150,15 @@ async def test_refresh_node_info(
 
     event = Event(
         type="interview failed",
-        data={"source": "node", "event": "interview failed", "nodeId": 52},
+        data={
+            "source": "node",
+            "event": "interview failed",
+            "nodeId": 52,
+            "args": {
+                "errorMessage": "error",
+                "isFinal": True,
+            },
+        },
     )
     client.driver.receive_event(event)
 
@@ -2283,8 +2172,7 @@ async def test_refresh_node_info(
         {
             ID: 2,
             TYPE: "zwave_js/refresh_node_info",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 9999,
+            DEVICE_ID: "fake_device",
         }
     )
     msg = await ws_client.receive_json()
@@ -2300,8 +2188,7 @@ async def test_refresh_node_info(
             {
                 ID: 3,
                 TYPE: "zwave_js/refresh_node_info",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 52,
+                DEVICE_ID: device.id,
             }
         )
         msg = await ws_client.receive_json()
@@ -2318,8 +2205,7 @@ async def test_refresh_node_info(
         {
             ID: 4,
             TYPE: "zwave_js/refresh_node_info",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -2334,14 +2220,14 @@ async def test_refresh_node_values(
     """Test that the refresh_node_values WS API call works."""
     entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
 
     client.async_send_command_no_wait.return_value = None
     await ws_client.send_json(
         {
             ID: 1,
             TYPE: "zwave_js/refresh_node_values",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -2354,26 +2240,12 @@ async def test_refresh_node_values(
 
     client.async_send_command_no_wait.reset_mock()
 
-    # Test getting non-existent node fails
+    # Test getting non-existent device fails
     await ws_client.send_json(
         {
             ID: 2,
             TYPE: "zwave_js/refresh_node_values",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 99999,
-        }
-    )
-    msg = await ws_client.receive_json()
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_FOUND
-
-    # Test getting non-existent entry fails
-    await ws_client.send_json(
-        {
-            ID: 3,
-            TYPE: "zwave_js/refresh_node_values",
-            ENTRY_ID: "fake_entry_id",
-            NODE_ID: 52,
+            DEVICE_ID: "fake_device",
         }
     )
     msg = await ws_client.receive_json()
@@ -2389,8 +2261,7 @@ async def test_refresh_node_values(
             {
                 ID: 4,
                 TYPE: "zwave_js/refresh_node_values",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 52,
+                DEVICE_ID: device.id,
             }
         )
         msg = await ws_client.receive_json()
@@ -2407,8 +2278,7 @@ async def test_refresh_node_values(
         {
             ID: 5,
             TYPE: "zwave_js/refresh_node_values",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -2418,19 +2288,19 @@ async def test_refresh_node_values(
 
 
 async def test_refresh_node_cc_values(
-    hass, client, multisensor_6, integration, hass_ws_client
+    hass, multisensor_6, client, integration, hass_ws_client
 ):
     """Test that the refresh_node_cc_values WS API call works."""
     entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
 
     client.async_send_command_no_wait.return_value = None
     await ws_client.send_json(
         {
             ID: 1,
             TYPE: "zwave_js/refresh_node_cc_values",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
             COMMAND_CLASS_ID: 112,
         }
     )
@@ -2450,8 +2320,7 @@ async def test_refresh_node_cc_values(
         {
             ID: 2,
             TYPE: "zwave_js/refresh_node_cc_values",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
             COMMAND_CLASS_ID: 9999,
         }
     )
@@ -2459,13 +2328,12 @@ async def test_refresh_node_cc_values(
     assert not msg["success"]
     assert msg["error"]["code"] == ERR_NOT_FOUND
 
-    # Test getting non-existent node fails
+    # Test getting non-existent device fails
     await ws_client.send_json(
         {
             ID: 3,
             TYPE: "zwave_js/refresh_node_cc_values",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 9999,
+            DEVICE_ID: "fake_device",
             COMMAND_CLASS_ID: 112,
         }
     )
@@ -2482,8 +2350,7 @@ async def test_refresh_node_cc_values(
             {
                 ID: 4,
                 TYPE: "zwave_js/refresh_node_cc_values",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 52,
+                DEVICE_ID: device.id,
                 COMMAND_CLASS_ID: 112,
             }
         )
@@ -2501,8 +2368,7 @@ async def test_refresh_node_cc_values(
         {
             ID: 5,
             TYPE: "zwave_js/refresh_node_cc_values",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
             COMMAND_CLASS_ID: 112,
         }
     )
@@ -2513,11 +2379,12 @@ async def test_refresh_node_cc_values(
 
 
 async def test_set_config_parameter(
-    hass, client, hass_ws_client, multisensor_6, integration
+    hass, multisensor_6, client, hass_ws_client, integration
 ):
     """Test the set_config_parameter service."""
     entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
 
     client.async_send_command_no_wait.return_value = None
 
@@ -2525,8 +2392,7 @@ async def test_set_config_parameter(
         {
             ID: 1,
             TYPE: "zwave_js/set_config_parameter",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
             PROPERTY: 102,
             PROPERTY_KEY: 1,
             VALUE: 1,
@@ -2574,8 +2440,7 @@ async def test_set_config_parameter(
         {
             ID: 2,
             TYPE: "zwave_js/set_config_parameter",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
             PROPERTY: 102,
             PROPERTY_KEY: 1,
             VALUE: "0x1",
@@ -2624,8 +2489,7 @@ async def test_set_config_parameter(
             {
                 ID: 3,
                 TYPE: "zwave_js/set_config_parameter",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 52,
+                DEVICE_ID: device.id,
                 PROPERTY: 102,
                 PROPERTY_KEY: 1,
                 VALUE: 1,
@@ -2644,8 +2508,7 @@ async def test_set_config_parameter(
             {
                 ID: 4,
                 TYPE: "zwave_js/set_config_parameter",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 52,
+                DEVICE_ID: device.id,
                 PROPERTY: 102,
                 PROPERTY_KEY: 1,
                 VALUE: 1,
@@ -2664,8 +2527,7 @@ async def test_set_config_parameter(
             {
                 ID: 5,
                 TYPE: "zwave_js/set_config_parameter",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 52,
+                DEVICE_ID: device.id,
                 PROPERTY: 102,
                 PROPERTY_KEY: 1,
                 VALUE: 1,
@@ -2684,8 +2546,7 @@ async def test_set_config_parameter(
         {
             ID: 6,
             TYPE: "zwave_js/set_config_parameter",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 9999,
+            DEVICE_ID: "fake_device",
             PROPERTY: 102,
             PROPERTY_KEY: 1,
             VALUE: 1,
@@ -2704,8 +2565,7 @@ async def test_set_config_parameter(
             {
                 ID: 7,
                 TYPE: "zwave_js/set_config_parameter",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: 52,
+                DEVICE_ID: device.id,
                 PROPERTY: 102,
                 PROPERTY_KEY: 1,
                 VALUE: 1,
@@ -2725,8 +2585,7 @@ async def test_set_config_parameter(
         {
             ID: 8,
             TYPE: "zwave_js/set_config_parameter",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 52,
+            DEVICE_ID: device.id,
             PROPERTY: 102,
             PROPERTY_KEY: 1,
             VALUE: 1,
@@ -2744,14 +2603,14 @@ async def test_get_config_parameters(hass, multisensor_6, integration, hass_ws_c
     entry = integration
     ws_client = await hass_ws_client(hass)
     node = multisensor_6
+    device = get_device(hass, node)
 
     # Test getting configuration parameter values
     await ws_client.send_json(
         {
             ID: 4,
             TYPE: "zwave_js/get_config_parameters",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -2773,8 +2632,7 @@ async def test_get_config_parameters(hass, multisensor_6, integration, hass_ws_c
         {
             ID: 5,
             TYPE: "zwave_js/get_config_parameters",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: 99999,
+            DEVICE_ID: "fake_device",
         }
     )
     msg = await ws_client.receive_json()
@@ -2789,71 +2647,7 @@ async def test_get_config_parameters(hass, multisensor_6, integration, hass_ws_c
         {
             ID: 6,
             TYPE: "zwave_js/get_config_parameters",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: node.node_id,
-        }
-    )
-    msg = await ws_client.receive_json()
-
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_LOADED
-
-
-async def test_dump_view(integration, hass_client):
-    """Test the HTTP dump view."""
-    client = await hass_client()
-    with patch(
-        "zwave_js_server.dump.dump_msgs",
-        return_value=[{"hello": "world"}, {"second": "msg"}],
-    ):
-        resp = await client.get(f"/api/zwave_js/dump/{integration.entry_id}")
-    assert resp.status == HTTPStatus.OK
-    assert json.loads(await resp.text()) == [{"hello": "world"}, {"second": "msg"}]
-
-
-async def test_version_info(hass, integration, hass_ws_client, version_state):
-    """Test the HTTP dump node view."""
-    entry = integration
-    ws_client = await hass_ws_client(hass)
-
-    version_info = {
-        "driver_version": version_state["driverVersion"],
-        "server_version": version_state["serverVersion"],
-        "min_schema_version": 0,
-        "max_schema_version": 0,
-    }
-
-    await ws_client.send_json(
-        {
-            ID: 3,
-            TYPE: "zwave_js/version_info",
-            ENTRY_ID: entry.entry_id,
-        }
-    )
-    msg = await ws_client.receive_json()
-    assert msg["result"] == version_info
-
-    # Test getting non-existent entry fails
-    await ws_client.send_json(
-        {
-            ID: 4,
-            TYPE: "zwave_js/version_info",
-            ENTRY_ID: "INVALID",
-        }
-    )
-    msg = await ws_client.receive_json()
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_FOUND
-
-    # Test sending command with not loaded entry fails
-    await hass.config_entries.async_unload(entry.entry_id)
-    await hass.async_block_till_done()
-
-    await ws_client.send_json(
-        {
-            ID: 5,
-            TYPE: "zwave_js/version_info",
-            ENTRY_ID: entry.entry_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -2867,11 +2661,12 @@ async def test_firmware_upload_view(
 ):
     """Test the HTTP firmware upload view."""
     client = await hass_client()
+    device = get_device(hass, multisensor_6)
     with patch(
         "homeassistant.components.zwave_js.api.begin_firmware_update",
     ) as mock_cmd:
         resp = await client.post(
-            f"/api/zwave_js/firmware/upload/{integration.entry_id}/{multisensor_6.node_id}",
+            f"/api/zwave_js/firmware/upload/{device.id}",
             data={"file": firmware_file},
         )
         assert mock_cmd.call_args[0][1:4] == (multisensor_6, "file", bytes(10))
@@ -2883,12 +2678,13 @@ async def test_firmware_upload_view_failed_command(
 ):
     """Test failed command for the HTTP firmware upload view."""
     client = await hass_client()
+    device = get_device(hass, multisensor_6)
     with patch(
         "homeassistant.components.zwave_js.api.begin_firmware_update",
         side_effect=FailedCommand("test", "test"),
     ):
         resp = await client.post(
-            f"/api/zwave_js/firmware/upload/{integration.entry_id}/{multisensor_6.node_id}",
+            f"/api/zwave_js/firmware/upload/{device.id}",
             data={"file": firmware_file},
         )
         assert resp.status == HTTPStatus.BAD_REQUEST
@@ -2898,9 +2694,10 @@ async def test_firmware_upload_view_invalid_payload(
     hass, multisensor_6, integration, hass_client
 ):
     """Test an invalid payload for the HTTP firmware upload view."""
+    device = get_device(hass, multisensor_6)
     client = await hass_client()
     resp = await client.post(
-        f"/api/zwave_js/firmware/upload/{integration.entry_id}/{multisensor_6.node_id}",
+        f"/api/zwave_js/firmware/upload/{device.id}",
         data={"wrong_key": bytes(10)},
     )
     assert resp.status == HTTPStatus.BAD_REQUEST
@@ -2908,56 +2705,43 @@ async def test_firmware_upload_view_invalid_payload(
 
 @pytest.mark.parametrize(
     "method, url",
-    [("get", "/api/zwave_js/dump/{}")],
-)
-async def test_view_non_admin_user(
-    integration, hass_client, hass_admin_user, method, url
-):
-    """Test config entry level views for non-admin users."""
-    client = await hass_client()
-    # Verify we require admin user
-    hass_admin_user.groups = []
-    resp = await client.request(method, url.format(integration.entry_id))
-    assert resp.status == HTTPStatus.UNAUTHORIZED
-
-
-@pytest.mark.parametrize(
-    "method, url",
-    [("post", "/api/zwave_js/firmware/upload/{}/{}")],
+    [("post", "/api/zwave_js/firmware/upload/{}")],
 )
 async def test_node_view_non_admin_user(
-    multisensor_6, integration, hass_client, hass_admin_user, method, url
+    hass, multisensor_6, integration, hass_client, hass_admin_user, method, url
 ):
     """Test node level views for non-admin users."""
     client = await hass_client()
+    device = get_device(hass, multisensor_6)
     # Verify we require admin user
     hass_admin_user.groups = []
-    resp = await client.request(
-        method, url.format(integration.entry_id, multisensor_6.node_id)
-    )
+    resp = await client.request(method, url.format(device.id))
     assert resp.status == HTTPStatus.UNAUTHORIZED
 
 
 @pytest.mark.parametrize(
     "method, url",
     [
-        ("get", "/api/zwave_js/dump/INVALID"),
-        ("post", "/api/zwave_js/firmware/upload/INVALID/1"),
+        ("post", "/api/zwave_js/firmware/upload/{}"),
     ],
 )
-async def test_view_invalid_entry_id(integration, hass_client, method, url):
-    """Test an invalid config entry id parameter."""
+async def test_view_unloaded_config_entry(
+    hass, multisensor_6, integration, hass_client, method, url
+):
+    """Test an unloaded config entry raises Bad Request."""
     client = await hass_client()
-    resp = await client.request(method, url)
+    device = get_device(hass, multisensor_6)
+    await hass.config_entries.async_unload(integration.entry_id)
+    resp = await client.request(method, url.format(device.id))
     assert resp.status == HTTPStatus.BAD_REQUEST
 
 
 @pytest.mark.parametrize(
     "method, url",
-    [("post", "/api/zwave_js/firmware/upload/{}/111")],
+    [("post", "/api/zwave_js/firmware/upload/INVALID")],
 )
-async def test_view_invalid_node_id(integration, hass_client, method, url):
-    """Test an invalid config entry id parameter."""
+async def test_view_invalid_device_id(integration, hass_client, method, url):
+    """Test an invalid device id parameter."""
     client = await hass_client()
     resp = await client.request(method, url.format(integration.entry_id))
     assert resp.status == HTTPStatus.NOT_FOUND
@@ -3302,10 +3086,12 @@ async def test_data_collection(hass, client, integration, hass_ws_client):
     result = msg["result"]
     assert result is None
 
-    assert len(client.async_send_command.call_args_list) == 1
-    args = client.async_send_command.call_args[0][0]
+    assert len(client.async_send_command.call_args_list) == 2
+    args = client.async_send_command.call_args_list[0][0][0]
     assert args["command"] == "driver.enable_statistics"
     assert args["applicationName"] == "Home Assistant"
+    args = client.async_send_command.call_args_list[1][0][0]
+    assert args["command"] == "driver.enable_error_reporting"
     assert entry.data[CONF_DATA_COLLECTION_OPTED_IN]
 
     client.async_send_command.reset_mock()
@@ -3404,14 +3190,14 @@ async def test_abort_firmware_update(
     """Test that the abort_firmware_update WS API call works."""
     entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
 
     client.async_send_command_no_wait.return_value = {}
     await ws_client.send_json(
         {
             ID: 1,
             TYPE: "zwave_js/abort_firmware_update",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -3431,8 +3217,7 @@ async def test_abort_firmware_update(
             {
                 ID: 2,
                 TYPE: "zwave_js/abort_firmware_update",
-                ENTRY_ID: entry.entry_id,
-                NODE_ID: multisensor_6.node_id,
+                DEVICE_ID: device.id,
             }
         )
         msg = await ws_client.receive_json()
@@ -3449,8 +3234,7 @@ async def test_abort_firmware_update(
         {
             ID: 3,
             TYPE: "zwave_js/abort_firmware_update",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -3460,32 +3244,19 @@ async def test_abort_firmware_update(
 
 
 async def test_abort_firmware_update_failures(
-    hass, integration, multisensor_6, client, hass_ws_client
+    hass, multisensor_6, client, integration, hass_ws_client
 ):
     """Test failures for the abort_firmware_update websocket command."""
     entry = integration
     ws_client = await hass_ws_client(hass)
-    # Test sending command with improper entry ID fails
-    await ws_client.send_json(
-        {
-            ID: 1,
-            TYPE: "zwave_js/abort_firmware_update",
-            ENTRY_ID: "fake_entry_id",
-            NODE_ID: multisensor_6.node_id,
-        }
-    )
-    msg = await ws_client.receive_json()
+    device = get_device(hass, multisensor_6)
 
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_FOUND
-
-    # Test sending command with improper node ID fails
+    # Test sending command with improper device ID fails
     await ws_client.send_json(
         {
             ID: 2,
             TYPE: "zwave_js/abort_firmware_update",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id + 100,
+            DEVICE_ID: "fake_device",
         }
     )
     msg = await ws_client.receive_json()
@@ -3501,8 +3272,7 @@ async def test_abort_firmware_update_failures(
         {
             ID: 3,
             TYPE: "zwave_js/abort_firmware_update",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -3512,11 +3282,11 @@ async def test_abort_firmware_update_failures(
 
 
 async def test_subscribe_firmware_update_status(
-    hass, integration, multisensor_6, client, hass_ws_client
+    hass, multisensor_6, integration, client, hass_ws_client
 ):
     """Test the subscribe_firmware_update_status websocket command."""
-    entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
 
     client.async_send_command_no_wait.return_value = {}
 
@@ -3524,8 +3294,7 @@ async def test_subscribe_firmware_update_status(
         {
             ID: 1,
             TYPE: "zwave_js/subscribe_firmware_update_status",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: device.id,
         }
     )
 
@@ -3573,11 +3342,11 @@ async def test_subscribe_firmware_update_status(
 
 
 async def test_subscribe_firmware_update_status_initial_value(
-    hass, integration, multisensor_6, client, hass_ws_client
+    hass, multisensor_6, client, integration, hass_ws_client
 ):
     """Test subscribe_firmware_update_status websocket command with in progress update."""
-    entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
 
     assert multisensor_6.firmware_update_progress is None
 
@@ -3600,43 +3369,35 @@ async def test_subscribe_firmware_update_status_initial_value(
         {
             ID: 1,
             TYPE: "zwave_js/subscribe_firmware_update_status",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: device.id,
         }
     )
 
     msg = await ws_client.receive_json()
     assert msg["success"]
-    assert msg["result"] == {"sent_fragments": 1, "total_fragments": 10}
+    assert msg["result"] is None
+
+    msg = await ws_client.receive_json()
+    assert msg["event"] == {
+        "event": "firmware update progress",
+        "sent_fragments": 1,
+        "total_fragments": 10,
+    }
 
 
 async def test_subscribe_firmware_update_status_failures(
-    hass, integration, multisensor_6, client, hass_ws_client
+    hass, multisensor_6, client, integration, hass_ws_client
 ):
     """Test failures for the subscribe_firmware_update_status websocket command."""
     entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
     # Test sending command with improper entry ID fails
     await ws_client.send_json(
         {
             ID: 1,
             TYPE: "zwave_js/subscribe_firmware_update_status",
-            ENTRY_ID: "fake_entry_id",
-            NODE_ID: multisensor_6.node_id,
-        }
-    )
-    msg = await ws_client.receive_json()
-
-    assert not msg["success"]
-    assert msg["error"]["code"] == ERR_NOT_FOUND
-
-    # Test sending command with improper node ID fails
-    await ws_client.send_json(
-        {
-            ID: 2,
-            TYPE: "zwave_js/subscribe_firmware_update_status",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id + 100,
+            DEVICE_ID: "fake_device",
         }
     )
     msg = await ws_client.receive_json()
@@ -3652,8 +3413,7 @@ async def test_subscribe_firmware_update_status_failures(
         {
             ID: 3,
             TYPE: "zwave_js/subscribe_firmware_update_status",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()
@@ -3816,7 +3576,12 @@ async def test_subscribe_controller_statistics(
 
     msg = await ws_client.receive_json()
     assert msg["success"]
-    assert msg["result"] == {
+    assert msg["result"] is None
+
+    msg = await ws_client.receive_json()
+    assert msg["event"] == {
+        "event": "statistics updated",
+        "source": "controller",
         "messages_tx": 0,
         "messages_rx": 0,
         "messages_dropped_tx": 0,
@@ -3899,19 +3664,25 @@ async def test_subscribe_node_statistics(
     """Test the subscribe_node_statistics command."""
     entry = integration
     ws_client = await hass_ws_client(hass)
+    device = get_device(hass, multisensor_6)
 
     await ws_client.send_json(
         {
             ID: 1,
             TYPE: "zwave_js/subscribe_node_statistics",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: device.id,
         }
     )
 
     msg = await ws_client.receive_json()
     assert msg["success"]
-    assert msg["result"] == {
+    assert msg["result"] is None
+
+    msg = await ws_client.receive_json()
+    assert msg["event"] == {
+        "source": "node",
+        "event": "statistics updated",
+        "nodeId": multisensor_6.node_id,
         "commands_tx": 0,
         "commands_rx": 0,
         "commands_dropped_tx": 0,
@@ -3953,25 +3724,13 @@ async def test_subscribe_node_statistics(
         {
             ID: 2,
             TYPE: "zwave_js/subscribe_node_statistics",
-            ENTRY_ID: "fake_entry_id",
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: "fake_device",
         }
     )
     msg = await ws_client.receive_json()
 
     assert not msg["success"]
     assert msg["error"]["code"] == ERR_NOT_FOUND
-
-    # Test sending command with improper node ID fails
-    await ws_client.send_json(
-        {
-            ID: 3,
-            TYPE: "zwave_js/subscribe_node_statistics",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id + 100,
-        }
-    )
-    msg = await ws_client.receive_json()
 
     # Test sending command with not loaded entry fails
     await hass.config_entries.async_unload(entry.entry_id)
@@ -3981,8 +3740,7 @@ async def test_subscribe_node_statistics(
         {
             ID: 4,
             TYPE: "zwave_js/subscribe_node_statistics",
-            ENTRY_ID: entry.entry_id,
-            NODE_ID: multisensor_6.node_id,
+            DEVICE_ID: device.id,
         }
     )
     msg = await ws_client.receive_json()

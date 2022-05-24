@@ -1,4 +1,5 @@
 """The tests for mqtt number component."""
+import copy
 import json
 from unittest.mock import patch
 
@@ -46,9 +47,11 @@ from .test_common import (
     help_test_entity_id_update_subscriptions,
     help_test_publishing_with_custom_encoding,
     help_test_reloadable,
+    help_test_reloadable_late,
     help_test_setting_attribute_via_mqtt_json_message,
     help_test_setting_attribute_with_template,
     help_test_setting_blocked_attribute_via_mqtt_json_message,
+    help_test_setup_manual_entity_from_yaml,
     help_test_unique_id,
     help_test_update_with_json_attrs_bad_JSON,
     help_test_update_with_json_attrs_not_dict,
@@ -541,7 +544,14 @@ async def test_entity_id_update_discovery_update(hass, mqtt_mock):
 async def test_entity_debug_info_message(hass, mqtt_mock):
     """Test MQTT debug info."""
     await help_test_entity_debug_info_message(
-        hass, mqtt_mock, number.DOMAIN, DEFAULT_CONFIG, payload="1"
+        hass,
+        mqtt_mock,
+        number.DOMAIN,
+        DEFAULT_CONFIG,
+        SERVICE_SET_VALUE,
+        service_parameters={ATTR_VALUE: 45},
+        command_payload="45",
+        state_payload="1",
     )
 
 
@@ -692,6 +702,13 @@ async def test_reloadable(hass, mqtt_mock, caplog, tmp_path):
     await help_test_reloadable(hass, mqtt_mock, caplog, tmp_path, domain, config)
 
 
+async def test_reloadable_late(hass, mqtt_client_mock, caplog, tmp_path):
+    """Test reloading the MQTT platform with late entry setup."""
+    domain = number.DOMAIN
+    config = DEFAULT_CONFIG[domain]
+    await help_test_reloadable_late(hass, caplog, tmp_path, domain, config)
+
+
 @pytest.mark.parametrize(
     "topic,value,attribute,attribute_value",
     [
@@ -714,3 +731,15 @@ async def test_encoding_subscribable_topics(
         attribute,
         attribute_value,
     )
+
+
+async def test_setup_manual_entity_from_yaml(hass, caplog, tmp_path):
+    """Test setup manual configured MQTT entity."""
+    platform = number.DOMAIN
+    config = copy.deepcopy(DEFAULT_CONFIG[platform])
+    config["name"] = "test"
+    del config["platform"]
+    await help_test_setup_manual_entity_from_yaml(
+        hass, caplog, tmp_path, platform, config
+    )
+    assert hass.states.get(f"{platform}.test") is not None

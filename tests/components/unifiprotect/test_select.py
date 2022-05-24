@@ -7,16 +7,19 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from pyunifiprotect.data import Camera, Light
-from pyunifiprotect.data.devices import LCDMessage, Viewer
-from pyunifiprotect.data.nvr import DoorbellMessage, Liveview
-from pyunifiprotect.data.types import (
+from pyunifiprotect.data import (
+    Camera,
     DoorbellMessageType,
     IRLEDMode,
+    LCDMessage,
+    Light,
     LightModeEnableType,
     LightModeType,
+    Liveview,
     RecordingMode,
+    Viewer,
 )
+from pyunifiprotect.data.nvr import DoorbellMessage
 
 from homeassistant.components.select.const import ATTR_OPTIONS
 from homeassistant.components.unifiprotect.const import (
@@ -510,6 +513,10 @@ async def test_select_set_option_camera_doorbell_custom(
         "select_option",
         {ATTR_ENTITY_ID: entity_id, ATTR_OPTION: "Test"},
         blocking=True,
+    )
+
+    camera.set_lcd_text.assert_called_once_with(
+        DoorbellMessageType.CUSTOM_MESSAGE, text="Test"
     )
 
 

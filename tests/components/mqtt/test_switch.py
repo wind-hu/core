@@ -5,12 +5,12 @@ from unittest.mock import patch
 import pytest
 
 from homeassistant.components import switch
-from homeassistant.components.mqtt.switch import MQTT_SWITCH_ATTRIBUTES_BLOCKED
 from homeassistant.const import (
     ATTR_ASSUMED_STATE,
     ATTR_DEVICE_CLASS,
     STATE_OFF,
     STATE_ON,
+    STATE_UNKNOWN,
 )
 import homeassistant.core as ha
 from homeassistant.setup import async_setup_component
@@ -35,9 +35,11 @@ from .test_common import (
     help_test_entity_id_update_subscriptions,
     help_test_publishing_with_custom_encoding,
     help_test_reloadable,
+    help_test_reloadable_late,
     help_test_setting_attribute_via_mqtt_json_message,
     help_test_setting_attribute_with_template,
     help_test_setting_blocked_attribute_via_mqtt_json_message,
+    help_test_setup_manual_entity_from_yaml,
     help_test_unique_id,
     help_test_update_with_json_attrs_bad_JSON,
     help_test_update_with_json_attrs_not_dict,
@@ -71,7 +73,7 @@ async def test_controlling_state_via_topic(hass, mqtt_mock):
     await hass.async_block_till_done()
 
     state = hass.states.get("switch.test")
-    assert state.state == STATE_OFF
+    assert state.state == STATE_UNKNOWN
     assert state.attributes.get(ATTR_DEVICE_CLASS) == "switch"
     assert not state.attributes.get(ATTR_ASSUMED_STATE)
 
@@ -84,6 +86,11 @@ async def test_controlling_state_via_topic(hass, mqtt_mock):
 
     state = hass.states.get("switch.test")
     assert state.state == STATE_OFF
+
+    async_fire_mqtt_message(hass, "state-topic", "None")
+
+    state = hass.states.get("switch.test")
+    assert state.state == STATE_UNKNOWN
 
 
 async def test_sending_mqtt_commands_and_optimistic(hass, mqtt_mock):
@@ -132,6 +139,26 @@ async def test_sending_mqtt_commands_and_optimistic(hass, mqtt_mock):
     assert state.state == STATE_OFF
 
 
+async def test_sending_inital_state_and_optimistic(hass, mqtt_mock):
+    """Test the initial state in optimistic mode."""
+    assert await async_setup_component(
+        hass,
+        switch.DOMAIN,
+        {
+            switch.DOMAIN: {
+                "platform": "mqtt",
+                "name": "test",
+                "command_topic": "command-topic",
+            }
+        },
+    )
+    await hass.async_block_till_done()
+
+    state = hass.states.get("switch.test")
+    assert state.state == STATE_UNKNOWN
+    assert state.attributes.get(ATTR_ASSUMED_STATE)
+
+
 async def test_controlling_state_via_topic_and_json_message(hass, mqtt_mock):
     """Test the controlling state via topic and JSON message."""
     assert await async_setup_component(
@@ -152,7 +179,7 @@ async def test_controlling_state_via_topic_and_json_message(hass, mqtt_mock):
     await hass.async_block_till_done()
 
     state = hass.states.get("switch.test")
-    assert state.state == STATE_OFF
+    assert state.state == STATE_UNKNOWN
 
     async_fire_mqtt_message(hass, "state-topic", '{"val":"beer on"}')
 
@@ -163,6 +190,11 @@ async def test_controlling_state_via_topic_and_json_message(hass, mqtt_mock):
 
     state = hass.states.get("switch.test")
     assert state.state == STATE_OFF
+
+    async_fire_mqtt_message(hass, "state-topic", '{"val": null}')
+
+    state = hass.states.get("switch.test")
+    assert state.state == STATE_UNKNOWN
 
 
 async def test_availability_when_connection_lost(hass, mqtt_mock):
@@ -236,7 +268,7 @@ async def test_custom_state_payload(hass, mqtt_mock):
     await hass.async_block_till_done()
 
     state = hass.states.get("switch.test")
-    assert state.state == STATE_OFF
+    assert state.state == STATE_UNKNOWN
     assert not state.attributes.get(ATTR_ASSUMED_STATE)
 
     async_fire_mqtt_message(hass, "state-topic", "HIGH")
@@ -260,7 +292,7 @@ async def test_setting_attribute_via_mqtt_json_message(hass, mqtt_mock):
 async def test_setting_blocked_attribute_via_mqtt_json_message(hass, mqtt_mock):
     """Test the setting of attribute via MQTT with JSON payload."""
     await help_test_setting_blocked_attribute_via_mqtt_json_message(
-        hass, mqtt_mock, switch.DOMAIN, DEFAULT_CONFIG, MQTT_SWITCH_ATTRIBUTES_BLOCKED
+        hass, mqtt_mock, switch.DOMAIN, DEFAULT_CONFIG, {}
     )
 
 
@@ -468,7 +500,7 @@ async def test_entity_id_update_discovery_update(hass, mqtt_mock):
 async def test_entity_debug_info_message(hass, mqtt_mock):
     """Test MQTT debug info."""
     await help_test_entity_debug_info_message(
-        hass, mqtt_mock, switch.DOMAIN, DEFAULT_CONFIG
+        hass, mqtt_mock, switch.DOMAIN, DEFAULT_CONFIG, switch.SERVICE_TURN_ON
     )
 
 
@@ -526,6 +558,13 @@ async def test_reloadable(hass, mqtt_mock, caplog, tmp_path):
     await help_test_reloadable(hass, mqtt_mock, caplog, tmp_path, domain, config)
 
 
+async def test_reloadable_late(hass, mqtt_client_mock, caplog, tmp_path):
+    """Test reloading the MQTT platform with late entry setup."""
+    domain = switch.DOMAIN
+    config = DEFAULT_CONFIG[domain]
+    await help_test_reloadable_late(hass, caplog, tmp_path, domain, config)
+
+
 @pytest.mark.parametrize(
     "topic,value,attribute,attribute_value",
     [
@@ -547,3 +586,15 @@ async def test_encoding_subscribable_topics(
         attribute,
         attribute_value,
     )
+
+
+async def test_setup_manual_entity_from_yaml(hass, caplog, tmp_path):
+    """Test setup manual configured MQTT entity."""
+    platform = switch.DOMAIN
+    config = copy.deepcopy(DEFAULT_CONFIG[platform])
+    config["name"] = "test"
+    del config["platform"]
+    await help_test_setup_manual_entity_from_yaml(
+        hass, caplog, tmp_path, platform, config
+    )
+    assert hass.states.get(f"{platform}.test") is not None

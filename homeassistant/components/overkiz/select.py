@@ -39,8 +39,7 @@ def _select_option_open_closed_pedestrian(
             OverkizCommandParam.CLOSED: OverkizCommand.CLOSE,
             OverkizCommandParam.OPEN: OverkizCommand.OPEN,
             OverkizCommandParam.PEDESTRIAN: OverkizCommand.SET_PEDESTRIAN_POSITION,
-        }[OverkizCommandParam(option)],
-        None,
+        }[OverkizCommandParam(option)]
     )
 
 
@@ -73,7 +72,20 @@ SELECT_DESCRIPTIONS: list[OverkizSelectDescription] = [
         entity_category=EntityCategory.CONFIG,
         device_class=OverkizDeviceClass.MEMORIZED_SIMPLE_VOLUME,
     ),
+    # SomfyHeatingTemperatureInterface
+    OverkizSelectDescription(
+        key=OverkizState.OVP_HEATING_TEMPERATURE_INTERFACE_OPERATING_MODE,
+        name="Operating Mode",
+        icon="mdi:sun-snowflake",
+        options=[OverkizCommandParam.HEATING, OverkizCommandParam.COOLING],
+        select_option=lambda option, execute_command: execute_command(
+            OverkizCommand.SET_OPERATING_MODE, option
+        ),
+        entity_category=EntityCategory.CONFIG,
+    ),
 ]
+
+SUPPORTED_STATES = {description.key: description for description in SELECT_DESCRIPTIONS}
 
 
 async def async_setup_entry(
@@ -85,10 +97,6 @@ async def async_setup_entry(
     data: HomeAssistantOverkizData = hass.data[DOMAIN][entry.entry_id]
     entities: list[OverkizSelect] = []
 
-    key_supported_states = {
-        description.key: description for description in SELECT_DESCRIPTIONS
-    }
-
     for device in data.coordinator.data.values():
         if (
             device.widget in IGNORED_OVERKIZ_DEVICES
@@ -97,7 +105,7 @@ async def async_setup_entry(
             continue
 
         for state in device.definition.states:
-            if description := key_supported_states.get(state.qualified_name):
+            if description := SUPPORTED_STATES.get(state.qualified_name):
                 entities.append(
                     OverkizSelect(
                         device.device_url,

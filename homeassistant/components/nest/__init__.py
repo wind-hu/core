@@ -42,7 +42,11 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     Unauthorized,
 )
-from homeassistant.helpers import config_entry_oauth2_flow, config_validation as cv
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.helpers.entity_registry import async_entries_for_device
 from homeassistant.helpers.typing import ConfigType
 
@@ -50,20 +54,18 @@ from . import api, config_flow
 from .const import (
     CONF_PROJECT_ID,
     CONF_SUBSCRIBER_ID,
+    DATA_DEVICE_MANAGER,
     DATA_NEST_CONFIG,
     DATA_SDM,
     DATA_SUBSCRIBER,
     DOMAIN,
-    OAUTH2_AUTHORIZE,
-    OAUTH2_TOKEN,
-    OOB_REDIRECT_URI,
 )
 from .events import EVENT_NAME_MAP, NEST_EVENT
 from .legacy import async_setup_legacy, async_setup_legacy_entry
 from .media_source import (
     async_get_media_event_store,
+    async_get_media_source_devices,
     async_get_transcoder,
-    get_media_source_devices,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -97,8 +99,6 @@ CONFIG_SCHEMA = vol.Schema(
 
 # Platforms for SDM API
 PLATFORMS = [Platform.SENSOR, Platform.CAMERA, Platform.CLIMATE]
-WEB_AUTH_DOMAIN = DOMAIN
-INSTALLED_AUTH_DOMAIN = f"{DOMAIN}.installed"
 
 # Fetch media events with a disk backed cache, with a limit for each camera
 # device. The largest media items are mp4 clips at ~120kb each, and we target
@@ -107,49 +107,6 @@ INSTALLED_AUTH_DOMAIN = f"{DOMAIN}.installed"
 EVENT_MEDIA_CACHE_SIZE = 1024  # number of events
 
 THUMBNAIL_SIZE_PX = 175
-
-
-class WebAuth(config_entry_oauth2_flow.LocalOAuth2Implementation):
-    """OAuth implementation using OAuth for web applications."""
-
-    name = "OAuth for Web"
-
-    def __init__(
-        self, hass: HomeAssistant, client_id: str, client_secret: str, project_id: str
-    ) -> None:
-        """Initialize WebAuth."""
-        super().__init__(
-            hass,
-            WEB_AUTH_DOMAIN,
-            client_id,
-            client_secret,
-            OAUTH2_AUTHORIZE.format(project_id=project_id),
-            OAUTH2_TOKEN,
-        )
-
-
-class InstalledAppAuth(config_entry_oauth2_flow.LocalOAuth2Implementation):
-    """OAuth implementation using OAuth for installed applications."""
-
-    name = "OAuth for Apps"
-
-    def __init__(
-        self, hass: HomeAssistant, client_id: str, client_secret: str, project_id: str
-    ) -> None:
-        """Initialize InstalledAppAuth."""
-        super().__init__(
-            hass,
-            INSTALLED_AUTH_DOMAIN,
-            client_id,
-            client_secret,
-            OAUTH2_AUTHORIZE.format(project_id=project_id),
-            OAUTH2_TOKEN,
-        )
-
-    @property
-    def redirect_uri(self) -> str:
-        """Return the redirect uri."""
-        return OOB_REDIRECT_URI
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -164,25 +121,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     if config_mode == config_flow.ConfigMode.LEGACY:
         return await async_setup_legacy(hass, config)
 
-    project_id = config[DOMAIN][CONF_PROJECT_ID]
-    config_flow.NestFlowHandler.async_register_implementation(
-        hass,
-        InstalledAppAuth(
-            hass,
-            config[DOMAIN][CONF_CLIENT_ID],
-            config[DOMAIN][CONF_CLIENT_SECRET],
-            project_id,
-        ),
-    )
-    config_flow.NestFlowHandler.async_register_implementation(
-        hass,
-        WebAuth(
-            hass,
-            config[DOMAIN][CONF_CLIENT_ID],
-            config[DOMAIN][CONF_CLIENT_SECRET],
-            project_id,
-        ),
-    )
+    config_flow.register_flow_implementation_from_config(hass, config)
 
     hass.http.register_view(NestEventMediaView(hass))
     hass.http.register_view(NestEventMediaThumbnailView(hass))
@@ -211,7 +150,7 @@ class SignalUpdateCallback:
         if not (events := event_message.resource_update_events):
             return
         _LOGGER.debug("Event Update %s", events.keys())
-        device_registry = await self._hass.helpers.device_registry.async_get_registry()
+        device_registry = dr.async_get(self._hass)
         device_entry = device_registry.async_get_device({(DOMAIN, device_id)})
         if not device_entry:
             return
@@ -224,6 +163,8 @@ class SignalUpdateCallback:
                 "timestamp": event_message.timestamp,
                 "nest_event_id": image_event.event_token,
             }
+            if image_event.zones:
+                message["zones"] = image_event.zones
             self._hass.bus.async_fire(NEST_EVENT, message)
 
 
@@ -265,7 +206,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady from err
 
     try:
-        await subscriber.async_get_device_manager()
+        device_manager = await subscriber.async_get_device_manager()
     except ApiException as err:
         if DATA_NEST_UNAVAILABLE not in hass.data[DOMAIN]:
             _LOGGER.error("Device manager error: %s", err)
@@ -275,6 +216,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN].pop(DATA_NEST_UNAVAILABLE, None)
     hass.data[DOMAIN][DATA_SUBSCRIBER] = subscriber
+    hass.data[DOMAIN][DATA_DEVICE_MANAGER] = device_manager
 
     hass.config_entries.async_setup_platforms(entry, PLATFORMS)
 
@@ -292,6 +234,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(DATA_SUBSCRIBER)
+        hass.data[DOMAIN].pop(DATA_DEVICE_MANAGER)
         hass.data[DOMAIN].pop(DATA_NEST_UNAVAILABLE, None)
 
     return unload_ok
@@ -330,22 +273,22 @@ class NestEventViewBase(HomeAssistantView, ABC):
     ) -> web.StreamResponse:
         """Start a GET request."""
         user = request[KEY_HASS_USER]
-        entity_registry = await self.hass.helpers.entity_registry.async_get_registry()
+        entity_registry = er.async_get(self.hass)
         for entry in async_entries_for_device(entity_registry, device_id):
             if not user.permissions.check_entity(entry.entity_id, POLICY_READ):
                 raise Unauthorized(entity_id=entry.entity_id)
 
-        devices = await get_media_source_devices(self.hass)
+        devices = async_get_media_source_devices(self.hass)
         if not (nest_device := devices.get(device_id)):
             return self._json_error(
                 f"No Nest Device found for '{device_id}'", HTTPStatus.NOT_FOUND
             )
         try:
             media = await self.load_media(nest_device, event_token)
-        except DecodeException as err:
-            raise HomeAssistantError(
-                "Even token was invalid: %s" % event_token
-            ) from err
+        except DecodeException:
+            return self._json_error(
+                f"Event token was invalid '{event_token}'", HTTPStatus.NOT_FOUND
+            )
         except ApiException as err:
             raise HomeAssistantError("Unable to fetch media for event") from err
         if not media:
@@ -420,8 +363,7 @@ class NestEventMediaThumbnailView(NestEventViewBase):
     async def handle_media(self, media: Media) -> web.StreamResponse:
         """Start a GET request."""
         contents = media.contents
-        content_type = media.content_type
-        if content_type == "image/jpeg":
+        if (content_type := media.content_type) == "image/jpeg":
             image = Image(media.event_image_type.content_type, contents)
             contents = img_util.scale_jpeg_camera_image(
                 image, THUMBNAIL_SIZE_PX, THUMBNAIL_SIZE_PX

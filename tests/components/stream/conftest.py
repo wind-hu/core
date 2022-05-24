@@ -16,7 +16,8 @@ from collections import deque
 from http import HTTPStatus
 import logging
 import threading
-from unittest.mock import patch
+from typing import Generator
+from unittest.mock import Mock, patch
 
 from aiohttp import web
 import async_timeout
@@ -175,7 +176,7 @@ class HLSSync:
         self.check_requests_ready()
         return self._original_not_found()
 
-    def response(self, body, headers, status=HTTPStatus.OK):
+    def response(self, body, headers=None, status=HTTPStatus.OK):
         """Intercept the Response call so we know when the web handler is finished."""
         self._num_finished += 1
         self.check_requests_ready()
@@ -217,6 +218,15 @@ def hls_sync():
         side_effect=sync.response,
     ):
         yield sync
+
+
+@pytest.fixture(autouse=True)
+def should_retry() -> Generator[Mock, None, None]:
+    """Fixture to disable stream worker retries in tests by default."""
+    with patch(
+        "homeassistant.components.stream._should_retry", return_value=False
+    ) as mock_should_retry:
+        yield mock_should_retry
 
 
 @pytest.fixture(scope="package")

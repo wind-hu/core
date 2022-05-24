@@ -13,9 +13,8 @@ from homeassistant.components.light import (
     ATTR_MAX_MIREDS,
     ATTR_MIN_MIREDS,
     ATTR_SUPPORTED_COLOR_MODES,
-    COLOR_MODE_COLOR_TEMP,
-    COLOR_MODE_HS,
     DOMAIN as LIGHT_DOMAIN,
+    ColorMode,
 )
 from homeassistant.const import (
     ATTR_ENTITY_ID,
@@ -25,7 +24,7 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from tests.common import MockConfigEntry
 
@@ -36,6 +35,7 @@ async def test_light_state_temperature(
     mock_elgato: MagicMock,
 ) -> None:
     """Test the creation and values of the Elgato Lights in temperature mode."""
+    device_registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
 
     # First segment of the strip
@@ -44,15 +44,30 @@ async def test_light_state_temperature(
     assert state.attributes.get(ATTR_BRIGHTNESS) == 54
     assert state.attributes.get(ATTR_COLOR_TEMP) == 297
     assert state.attributes.get(ATTR_HS_COLOR) == (27.316, 47.743)
-    assert state.attributes.get(ATTR_COLOR_MODE) == COLOR_MODE_COLOR_TEMP
+    assert state.attributes.get(ATTR_COLOR_MODE) == ColorMode.COLOR_TEMP
     assert state.attributes.get(ATTR_MIN_MIREDS) == 143
     assert state.attributes.get(ATTR_MAX_MIREDS) == 344
-    assert state.attributes.get(ATTR_SUPPORTED_COLOR_MODES) == [COLOR_MODE_COLOR_TEMP]
+    assert state.attributes.get(ATTR_SUPPORTED_COLOR_MODES) == [ColorMode.COLOR_TEMP]
     assert state.state == STATE_ON
 
     entry = entity_registry.async_get("light.frenck")
     assert entry
     assert entry.unique_id == "CN11A1A00001"
+
+    assert entry.device_id
+    device_entry = device_registry.async_get(entry.device_id)
+    assert device_entry
+    assert device_entry.configuration_url is None
+    assert device_entry.connections == {
+        (dr.CONNECTION_NETWORK_MAC, "aa:bb:cc:dd:ee:ff")
+    }
+    assert device_entry.entry_type is None
+    assert device_entry.identifiers == {(DOMAIN, "CN11A1A00001")}
+    assert device_entry.manufacturer == "Elgato"
+    assert device_entry.model == "Elgato Key Light"
+    assert device_entry.name == "Frenck"
+    assert device_entry.sw_version == "1.0.3 (192)"
+    assert device_entry.hw_version == "53"
 
 
 @pytest.mark.parametrize(
@@ -74,10 +89,10 @@ async def test_light_state_color(
     assert state.attributes.get(ATTR_HS_COLOR) == (358.0, 6.0)
     assert state.attributes.get(ATTR_MIN_MIREDS) == 153
     assert state.attributes.get(ATTR_MAX_MIREDS) == 285
-    assert state.attributes.get(ATTR_COLOR_MODE) == COLOR_MODE_HS
+    assert state.attributes.get(ATTR_COLOR_MODE) == ColorMode.HS
     assert state.attributes.get(ATTR_SUPPORTED_COLOR_MODES) == [
-        COLOR_MODE_COLOR_TEMP,
-        COLOR_MODE_HS,
+        ColorMode.COLOR_TEMP,
+        ColorMode.HS,
     ]
     assert state.state == STATE_ON
 

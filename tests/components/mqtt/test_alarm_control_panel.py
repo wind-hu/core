@@ -53,9 +53,11 @@ from .test_common import (
     help_test_entity_id_update_subscriptions,
     help_test_publishing_with_custom_encoding,
     help_test_reloadable,
+    help_test_reloadable_late,
     help_test_setting_attribute_via_mqtt_json_message,
     help_test_setting_attribute_with_template,
     help_test_setting_blocked_attribute_via_mqtt_json_message,
+    help_test_setup_manual_entity_from_yaml,
     help_test_unique_id,
     help_test_update_with_json_attrs_bad_JSON,
     help_test_update_with_json_attrs_not_dict,
@@ -475,7 +477,7 @@ async def test_attributes_code_number(hass, mqtt_mock):
     state = hass.states.get("alarm_control_panel.test")
     assert (
         state.attributes.get(alarm_control_panel.ATTR_CODE_FORMAT)
-        == alarm_control_panel.FORMAT_NUMBER
+        == alarm_control_panel.CodeFormat.NUMBER
     )
 
 
@@ -490,7 +492,7 @@ async def test_attributes_remote_code_number(hass, mqtt_mock):
     state = hass.states.get("alarm_control_panel.test")
     assert (
         state.attributes.get(alarm_control_panel.ATTR_CODE_FORMAT)
-        == alarm_control_panel.FORMAT_NUMBER
+        == alarm_control_panel.CodeFormat.NUMBER
     )
 
 
@@ -505,7 +507,7 @@ async def test_attributes_code_text(hass, mqtt_mock):
     state = hass.states.get("alarm_control_panel.test")
     assert (
         state.attributes.get(alarm_control_panel.ATTR_CODE_FORMAT)
-        == alarm_control_panel.FORMAT_TEXT
+        == alarm_control_panel.CodeFormat.TEXT
     )
 
 
@@ -771,7 +773,12 @@ async def test_entity_id_update_discovery_update(hass, mqtt_mock):
 async def test_entity_debug_info_message(hass, mqtt_mock):
     """Test MQTT debug info."""
     await help_test_entity_debug_info_message(
-        hass, mqtt_mock, alarm_control_panel.DOMAIN, DEFAULT_CONFIG
+        hass,
+        mqtt_mock,
+        alarm_control_panel.DOMAIN,
+        DEFAULT_CONFIG,
+        alarm_control_panel.SERVICE_ALARM_DISARM,
+        command_payload="DISARM",
     )
 
 
@@ -835,3 +842,22 @@ async def test_reloadable(hass, mqtt_mock, caplog, tmp_path):
     domain = alarm_control_panel.DOMAIN
     config = DEFAULT_CONFIG[domain]
     await help_test_reloadable(hass, mqtt_mock, caplog, tmp_path, domain, config)
+
+
+async def test_reloadable_late(hass, mqtt_client_mock, caplog, tmp_path):
+    """Test reloading the MQTT platform with late entry setup."""
+    domain = alarm_control_panel.DOMAIN
+    config = DEFAULT_CONFIG[domain]
+    await help_test_reloadable_late(hass, caplog, tmp_path, domain, config)
+
+
+async def test_setup_manual_entity_from_yaml(hass, caplog, tmp_path):
+    """Test setup manual configured MQTT entity."""
+    platform = alarm_control_panel.DOMAIN
+    config = copy.deepcopy(DEFAULT_CONFIG[platform])
+    config["name"] = "test"
+    del config["platform"]
+    await help_test_setup_manual_entity_from_yaml(
+        hass, caplog, tmp_path, platform, config
+    )
+    assert hass.states.get(f"{platform}.test") is not None

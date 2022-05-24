@@ -1,6 +1,6 @@
 """Constant definitions for UniFi Protect Integration."""
 
-from pyunifiprotect.data.types import ModelType, Version
+from pyunifiprotect.data import ModelType, Version
 
 from homeassistant.const import Platform
 
@@ -37,6 +37,8 @@ DEVICES_THAT_ADOPT = {
     ModelType.LIGHT,
     ModelType.VIEWPORT,
     ModelType.SENSOR,
+    ModelType.DOORLOCK,
+    ModelType.CHIME,
 }
 DEVICES_WITH_ENTITIES = DEVICES_THAT_ADOPT | {ModelType.NVR}
 DEVICES_FOR_SUBSCRIBE = DEVICES_WITH_ENTITIES | {ModelType.EVENT}
@@ -51,6 +53,7 @@ PLATFORMS = [
     Platform.BUTTON,
     Platform.CAMERA,
     Platform.LIGHT,
+    Platform.LOCK,
     Platform.MEDIA_PLAYER,
     Platform.NUMBER,
     Platform.SELECT,
